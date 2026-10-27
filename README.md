@@ -6,8 +6,7 @@
 [中文文档](./README.zh.md)
 
 When a task finishes inside dsh, a corner-docked toast slides in with
-**View result / Later / Dismiss** actions — mirroring the completion prompt you
-know from WorkBuddy. The dock corner (all four), the UI language (中文 / English),
+**View result / Later / Dismiss** actions. The dock corner (all four), the UI language (中文 / English),
 and the click behavior (navigate to session vs. expand in place) are all
 configurable from a settings panel.
 
