@@ -1,8 +1,5 @@
 # dsh-task-toast
 
-> A WorkBuddy-style **task-completion notification overlay** plugin for
-> [DeepSeek Harness](https://www.deepseek.com/harness/) (`dsh`).
-
 [中文文档](./README.zh.md)
 
 When a task finishes inside dsh, a corner-docked toast slides in with
