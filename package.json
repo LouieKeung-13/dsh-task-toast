@@ -1,0 +1,57 @@
+{
+  "name": "dsh-task-toast",
+  "version": "1.0.0",
+  "description": "A WorkBuddy-style task-completion notification overlay plugin for DeepSeek Harness (dsh). Renders a corner-docked toast with View / Later / Dismiss actions; position (four corners) and click behavior (navigate vs. in-place expand) are fully configurable.",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-ui-slots"
+      ]
+    }
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "check": "node --check lib/index.js && node --check lib/client.js",
+    "lint": "node --check lib/index.js && node --check lib/client.js"
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "deepseek",
+    "cordis",
+    "plugin",
+    "toast",
+    "notification",
+    "task-complete",
+    "overlay"
+  ],
+  "author": "",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/OWNER/dsh-task-toast.git"
+  },
+  "bugs": {
+    "url": "https://github.com/OWNER/dsh-task-toast/issues"
+  },
+  "homepage": "https://github.com/OWNER/dsh-task-toast#readme"
+}

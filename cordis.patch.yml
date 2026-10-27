@@ -1,0 +1,3 @@
+- id: dsh-task-toast
+  name: dsh-task-toast
+  description: Task-completion notification overlay for DeepSeek Harness.
