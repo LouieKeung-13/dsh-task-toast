@@ -71,7 +71,7 @@ Then restart the dsh client (or reload the web process: `dsh --profile web web`)
 ### Option B — From GitHub
 
 ```bash
-dsh plugin --profile web add github:<owner>/dsh-task-toast
+dsh plugin --profile web add github:LouieKeung-13/dsh-task-toast
 ```
 
 ### Verify

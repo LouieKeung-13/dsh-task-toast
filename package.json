@@ -48,10 +48,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/OWNER/dsh-task-toast.git"
+    "url": "git+https://github.com/LouieKeung-13/dsh-task-toast.git"
   },
   "bugs": {
-    "url": "https://github.com/OWNER/dsh-task-toast/issues"
+    "url": "https://github.com/LouieKeung-13/dsh-task-toast/issues"
   },
-  "homepage": "https://github.com/OWNER/dsh-task-toast#readme"
+  "homepage": "https://github.com/LouieKeung-13/dsh-task-toast#readme"
 }
