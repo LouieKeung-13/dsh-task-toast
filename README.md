@@ -86,9 +86,13 @@ notification** to confirm the overlay appears in the chosen corner.
 | Option | Description |
 | --- | --- |
 | Enable task-completion notifications | Master switch. |
+| UI language | 中文（简体） / English — localizes all overlay and settings chrome. |
 | Overlay position | Top-left / Top-right / Bottom-left / Bottom-right. |
 | “View result” behavior | Navigate to session / Expand content in overlay. |
 | Show result summary | Whether the toast renders the result text. |
+
+> The UI ships bilingual (中文 / English); the notification title and body are
+> localized on the host side and follow the same language setting. Default: 中文（简体）.
 
 ## Development
 
