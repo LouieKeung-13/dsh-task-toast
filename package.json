@@ -1,12 +1,15 @@
 {
   "name": "dsh-task-toast",
-  "version": "1.0.0",
-  "description": "A WorkBuddy-style task-completion notification overlay plugin for DeepSeek Harness (dsh). Renders a corner-docked toast with View / Later / Dismiss actions; position (four corners) and click behavior (navigate vs. in-place expand) are fully configurable.",
+  "version": "1.1.0",
+  "description": "WorkBuddy-style task-completion notification overlay for DeepSeek Harness (dsh): four-corner dockable toast, bilingual UI (zh/en), and click-to-navigate or in-place expand.",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
     ".": "./lib/index.js",
-    "./client": "./lib/client.js"
+    "./host": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./config": "./lib/config.js",
+    "./package.json": "./package.json"
   },
   "dsh": {
     "bundle": {
@@ -22,27 +25,28 @@
   },
   "files": [
     "lib",
+    "src",
+    "scripts",
     "cordis.patch.yml",
     "README.md",
     "README.zh.md",
     "LICENSE"
   ],
   "scripts": {
-    "check": "node --check lib/index.js && node --check lib/client.js",
-    "lint": "node --check lib/index.js && node --check lib/client.js"
+    "build:dynamic": "node scripts/build-dynamic.mjs",
+    "build:static": "node scripts/build-static.mjs",
+    "build": "node scripts/build-dynamic.mjs && node scripts/build-static.mjs",
+    "check": "node scripts/build-dynamic.mjs && node scripts/build-static.mjs"
   },
   "keywords": [
     "dsh",
     "deepseek-harness",
-    "deepseek",
     "cordis",
     "plugin",
-    "toast",
     "notification",
-    "task-complete",
-    "overlay"
+    "toast",
+    "task"
   ],
-  "author": "",
   "license": "MIT",
   "engines": {
     "node": ">=18"
@@ -54,5 +58,9 @@
   "bugs": {
     "url": "https://github.com/LouieKeung-13/dsh-task-toast/issues"
   },
-  "homepage": "https://github.com/LouieKeung-13/dsh-task-toast#readme"
+  "homepage": "https://github.com/LouieKeung-13/dsh-task-toast#readme",
+  "author": {
+    "name": "LouieKeung-13",
+    "url": "https://github.com/LouieKeung-13"
+  }
 }
