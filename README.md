@@ -12,7 +12,7 @@ configurable from a settings panel.
 ## Features
 
 - **Four-corner docking** — top-left / top-right / bottom-left / bottom-right,
-  defaulting to **bottom-right** (WorkBuddy-style).
+  defaulting to **bottom-right**.
 - **Three-action overlay** — `View result` / `Later` / `Dismiss`, plus a
   persistent close button. Each toast auto-dismisses after a configurable delay.
 - **Configurable click behavior**
