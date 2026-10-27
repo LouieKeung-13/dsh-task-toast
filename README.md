@@ -74,13 +74,16 @@ dsh plugin --profile web add github:LouieKeung-13/dsh-task-toast
 dsh plugin --profile web add /absolute/path/to/dsh-task-toast
 ```
 
-Then restart the dsh client (or reload the web process: `dsh --profile web web`).
+Then **fully quit and restart dsh** — a page reload is NOT enough. The Host
+(Node) half is a bundle that is read at boot; the client half (settings UI) may
+hot-reload, but the HTTP routes that power notifications only come up after a
+full restart.
 
 ### Upgrading from v1.0.0
 
 v1.0.0 reported "this plugin package contains no components" because it lacked
 the `dsh.client` manifest and shipped raw source instead of a built bundle.
-**Re-install or update** to v1.1.0:
+**Re-install or update** to v1.1.1:
 
 ```bash
 dsh plugin --profile web remove dsh-task-toast
@@ -90,7 +93,44 @@ dsh plugin --profile web add github:LouieKeung-13/dsh-task-toast
 ### Verify
 
 Open dsh → **Settings → Task notifications**, then click **Send test
-notification** to confirm the overlay appears in the chosen corner.
+notification** to confirm the overlay appears in the chosen corner. The settings
+page now also shows a **Host status** row:
+
+- `Host connected` — routes are live; real task-completion notifications work.
+- `Host unreachable` — the Host half did not mount (see Troubleshooting).
+
+## Troubleshooting
+
+**Symptom: the settings page shows, but clicking *Send test notification* does
+nothing (no overlay).**
+
+This almost always means the **Host half is not mounted**, even though the Client
+(settings UI) loads. Check, in order:
+
+1. **Did you fully restart dsh?** The Host bundle is read at boot. `remove` +
+   `add` while dsh is running, followed by a page refresh, will show the new
+   settings UI but leave the Host routes unregistered. Quit dsh completely and
+   relaunch.
+2. **Check the Host status row** in Settings → Task notifications.
+   - `Host connected` but still no toast → report it; likely an event-name
+     mismatch for your dsh version.
+   - `Host unreachable` → Host did not mount or `ctx.webServer` is unavailable.
+3. **Open the browser DevTools console (F12)** and look for lines prefixed
+   `[task-toast]`. If you see `长轮询失败（Host 可能未加载/未重启）`, the Host
+   HTTP routes are not responding.
+4. **Check the dsh process log / terminal** for:
+   - `[dsh-task-toast] host apply() 开始执行…` → Host plugin loaded.
+   - `[dsh-task-toast] host 已挂载：5 条 HTTP 路由…` → routes registered (good).
+   - `[dsh-task-toast] FATAL: ctx.webServer 不可用…` → your dsh version does not
+     expose `webServer`; the plugin cannot serve HTTP (a code change is needed).
+5. **The test button falls back to a local preview** if the Host is unreachable,
+   so a popup with "测试通知（本地预览）" and a Host-error note proves the overlay
+   UI itself works — the issue is purely the Host link.
+
+> Note: this plugin was developed without a live dsh runtime, so Host-side
+> behavior (event names, `webServer` API) is matched against the reference
+> `dsh-session-notify` implementation and may need calibration for your exact
+> dsh build. The diagnostics above are designed to localize any such gap.
 
 ## Configuration
 

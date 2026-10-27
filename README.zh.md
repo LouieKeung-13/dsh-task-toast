@@ -72,12 +72,14 @@ dsh plugin --profile web add github:LouieKeung-13/dsh-task-toast
 dsh plugin --profile web add /绝对路径/dsh-task-toast
 ```
 
-随后重启 dsh 客户端（或重载 web 进程：`dsh --profile web web`）。
+随后 **完全退出并重启 dsh**——仅刷新页面不够。Host（Node 端）是一份在
+启动时读取的 bundle，设置页（Client 端）可能热更新，但承载通知的 HTTP 路由
+只有完整重启后才会注册。
 
 ### 从 v1.0.0 升级
 
 v1.0.0 因缺少 `dsh.client` 清单、且直接发布裸源码而未打包，被 dsh 识别为
-「不包含任何组件」。请 **重新安装 / 更新** 到 v1.1.0：
+「不包含任何组件」。请 **重新安装 / 更新** 到 v1.1.1：
 
 ```bash
 dsh plugin --profile web remove dsh-task-toast
@@ -87,6 +89,35 @@ dsh plugin --profile web add github:LouieKeung-13/dsh-task-toast
 ### 验证
 
 打开 dsh → **设置 → 任务提示**，点击 **发送测试通知**，确认浮层在所选角落出现。
+设置页现在会显示一行 **Host 连接状态**：
+
+- `Host 已连接` —— 路由已就绪，真实任务完成通知可用。
+- `Host 未连接` —— Host 半体未挂载（见下方排障）。
+
+## 故障排查
+
+**现象：设置页能看到，但点击「发送测试通知」毫无反应（无浮层）。**
+
+这通常意味着 **Host 半体未挂载**，即使 Client（设置 UI）已加载。依次检查：
+
+1. **是否完整重启了 dsh？** Host bundle 在启动时读取。在 dsh 运行时 `remove` +
+   `add` 再刷新页面，会显示新的设置 UI，但 Host 路由不会注册。请彻底退出 dsh 再启动。
+2. **看设置页的 Host 连接状态行：**
+   - `Host 已连接` 但仍无浮层 → 多半是事件名与你 dsh 版本不匹配，请反馈。
+   - `Host 未连接` → Host 未挂载或 `ctx.webServer` 不可用。
+3. **打开浏览器开发者控制台（F12）**，查找以 `[task-toast]` 开头的日志。
+   若看到 `长轮询失败（Host 可能未加载/未重启）`，说明 Host HTTP 路由无响应。
+4. **查看 dsh 进程日志 / 终端** 是否有：
+   - `[dsh-task-toast] host apply() 开始执行…` → Host 插件已加载。
+   - `[dsh-task-toast] host 已挂载：5 条 HTTP 路由…` → 路由已注册（正常）。
+   - `[dsh-task-toast] FATAL: ctx.webServer 不可用…` → 你的 dsh 版本未提供
+     `webServer`，插件无法提供 HTTP（需要改代码适配）。
+5. **测试按钮在 Host 不可达时会本地兜底弹窗**，所以出现「测试通知（本地预览）」
+   并附带 Host 错误提示，即证明浮层 UI 本身可用——问题只在 Host 链路。
+
+> 说明：本插件开发时未接入真实 dsh 运行环境，Host 端行为（事件名、`webServer`
+> API）是参照可运行的 `dsh-session-notify` 实现匹配的，可能需要针对你的 dsh
+> 具体版本做校准。上述诊断正是为了快速定位这类偏差。
 
 ## 配置
 

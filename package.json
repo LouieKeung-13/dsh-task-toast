@@ -1,6 +1,6 @@
 {
   "name": "dsh-task-toast",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "WorkBuddy-style task-completion notification overlay for DeepSeek Harness (dsh): four-corner dockable toast, bilingual UI (zh/en), and click-to-navigate or in-place expand.",
   "type": "module",
   "main": "lib/index.js",

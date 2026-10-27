@@ -135,6 +135,11 @@ const apply = async (ctx) => {
     toastCounter: 0,
     activeSession: null,
     disposed: false,
+    // 诊断：Host（Node 端）连接状态
+    hostStatus: 'connecting', // 'connecting' | 'connected' | 'error'
+    hostError: null,
+    failStreak: 0,
+    seqLocal: 0,
   }
   const listeners = new Set()
   const emitter = {
@@ -220,8 +225,21 @@ const apply = async (ctx) => {
         if (res && Array.isArray(res.items)) items = res.items.filter((i) => i && typeof i.seq === 'number' && i.seq > state.seq)
         if (res && typeof res.seq === 'number') state.seq = res.seq
         if (items.length) handleItems(items)
+        // 连接状态诊断：成功响应即视为 Host 可达
+        if (state.hostStatus !== 'connected') {
+          state.hostStatus = 'connected'
+          state.hostError = null
+          emitter.emit() // 通知设置页刷新连接状态
+        }
+        state.failStreak = 0
       } catch (e) {
-        console.error('task-toast poll failed', e)
+        state.failStreak += 1
+        state.hostError = (e && e.message) ? e.message : String(e)
+        if (state.failStreak >= 3 && state.hostStatus !== 'error') {
+          state.hostStatus = 'error'
+          emitter.emit() // 通知设置页刷新连接状态
+        }
+        console.error('[task-toast] 长轮询失败（Host 可能未加载/未重启）：', state.hostError)
         if (timer) await timer.timeout(1500)
       }
     }
@@ -288,8 +306,14 @@ const apply = async (ctx) => {
   // ---------- 设置页（settings.section） ----------
   function SettingsPage() {
     const [cfg, setCfg] = React.useState(state.config)
+    const [, forceTick] = React.useState(0)
     const t = ui(cfg.locale)
-    React.useEffect(() => { try { if (typeof Notification !== 'undefined' && Notification.permission) {} } catch (e) { /* ignore */ } }, [])
+    React.useEffect(() => {
+      try { if (typeof Notification !== 'undefined' && Notification.permission) {} } catch (e) { /* ignore */ }
+      // 订阅 emitter，使 Host 连接状态等诊断信息实时刷新
+      const off = emitter.subscribe(() => forceTick((n) => n + 1))
+      return off
+    }, [])
 
     function update(patch) {
       const next = Object.assign({}, cfg, {
@@ -323,9 +347,47 @@ const apply = async (ctx) => {
     const vbOpts = VIEW_BEHAVIORS.map((b) => React.createElement('option', { key: b.id, value: b.id }, cfg.locale === 'en' ? b.en : b.zh))
     const levelOpts = LEVELS.map((l) => React.createElement('option', { key: l.id, value: l.id }, cfg.locale === 'en' ? l.en : l.zh))
 
+    // 连接状态文案（诊断用）
+    const statusText =
+      state.hostStatus === 'connected' ? (cfg.locale === 'en' ? 'Host connected' : 'Host 已连接')
+        : state.hostStatus === 'error' ? (cfg.locale === 'en' ? 'Host unreachable' : 'Host 未连接')
+          : (cfg.locale === 'en' ? 'Connecting…' : '连接中…')
+    const statusColor =
+      state.hostStatus === 'connected' ? 'var(--dsw-alias-state-success-primary)'
+        : state.hostStatus === 'error' ? 'var(--dsw-alias-state-error-primary)'
+          : 'var(--dsw-alias-label-secondary)'
+
+    // 测试通知：先尝试 Host 真实链路；若 Host 不可达，则本地兜底弹窗并提示原因。
+    function sendTest() {
+      api.test().catch((err) => {
+        const msg = (err && err.message) ? err.message : String(err)
+        state.hostError = msg
+        state.hostStatus = 'error'
+        state.seqLocal -= 1
+        addToast({
+          seq: state.seqLocal,
+          category: 'test',
+          sessionId: null,
+          title: (cfg.locale === 'en' ? 'Test (local fallback)' : '测试通知（本地预览）'),
+          body: (cfg.locale === 'en'
+            ? 'Host process did not respond: ' + msg + '. This preview proves the overlay UI works.'
+            : '宿主进程（Host）未响应：' + msg + '。此本地预览证明浮层 UI 本身可用，请检查 dsh 是否重启 / Host 是否挂载。'),
+        }, 12000)
+        emitter.emit()
+      })
+    }
+
     return React.createElement('div', { className: 'dsh-tt-settings' },
       React.createElement('h3', { className: 'dsh-tt-section-title' }, t.settingsTitle),
       React.createElement('p', { className: 'dsh-tt-hint' }, t.settingsHint),
+      React.createElement('div', { className: 'dsh-tt-row' },
+        React.createElement('div', { className: 'dsh-tt-row-text' },
+          React.createElement('div', { className: 'dsh-tt-row-label' }, cfg.locale === 'en' ? 'Host status' : 'Host 连接状态'),
+          React.createElement('div', { className: 'dsh-tt-row-desc' },
+            state.hostStatus === 'error' && state.hostError ? state.hostError.slice(0, 80) : (cfg.locale === 'en' ? 'Whether the Node host serves HTTP routes' : '宿主进程是否提供了 HTTP 路由'))
+        ),
+        React.createElement('span', { style: { color: statusColor, fontWeight: 600 } }, statusText)
+      ),
       React.createElement('label', { className: 'dsh-tt-check' },
         React.createElement('input', { type: 'checkbox', checked: !!cfg.enabled, onChange: (e) => update({ enabled: e.target.checked }) }),
         ' ' + t.enable
@@ -345,7 +407,7 @@ const apply = async (ctx) => {
       ),
       selectRow(t.autoDismiss, null, React.createElement('input', { className: 'dsh-tt-input', type: 'number', min: '0', step: '1', value: String(cfg.autoDismissMs), style: { width: '90px' }, onChange: (e) => { const v = parseInt(e.target.value, 10); update({ autoDismissMs: isNaN(v) ? 0 : v }) } })),
       React.createElement('div', { className: 'dsh-tt-actions-row' },
-        React.createElement('button', { className: 'dsh-tt-btn-lg', onClick: () => { api.test().catch(() => { /* ignore */ }) } }, t.testBtn)
+        React.createElement('button', { className: 'dsh-tt-btn-lg', onClick: () => { sendTest() } }, t.testBtn)
       )
     )
   }
