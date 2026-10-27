@@ -1,5 +1,7 @@
 # dsh-task-toast
 
+[中文文档](./README.zh.md)
+
 > A WorkBuddy-style **task-completion notification overlay** plugin for
 > [DeepSeek Harness](https://www.deepseek.com/harness/) (`dsh`).
 
