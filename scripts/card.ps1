@@ -1,14 +1,20 @@
-# scripts/card.ps1
-# dsh-task-toast —— 独立置顶小卡片（WinForms 原生窗口）
+﻿# scripts/card.ps1
+# dsh-task-toast WinForms
 #
-# 与 topmost.ps1 的区别：
-#   · topmost.ps1 只是把「dsh 主窗口」抬到最上层（大窗口会盖住别的应用）
-#   · 本脚本创建一个**独立的无边框浮窗**：只占右下角一小块，压在所有应用之上，
-#     不抢占焦点，带亚克力模糊 / 圆角 / 三按钮，点按钮后把结果 POST 回 Host。
+# topmost.ps1
+# topmost.ps1 dsh
+# ** **
+# POST Host
 #
-# 由 Host（lib/index.js）在每条通知到达时 spawn 一次；窗口关闭后进程自然退出。
+# Windows + 1px +
+# / / v1.7.0
 #
-# 参数全部来自 Host，注意保持与 src/static/host.js 中的 showCard() 一致。
+# ** ** DPI
+# v1.6.x
+#
+# Host lib/index.js spawn
+#
+# Host src/static/host.js spawnCard()
 
 param(
   [string]$Title = '',
@@ -24,17 +30,24 @@ param(
   [string]$Id = '',
   [int]$SelfTest = 0,
   [int]$Toast = 0,
-  [int]$ToastOnly = 0
+  [int]$ToastOnly = 0,
+  [string]$Snapshot = '',
+ # Host ** ** / C#
+ # PS 5.1 UTF-8 BOM .ps1 GBK
+ # v1.6.x Unicode
+  [string]$BtnView = '',
+  [string]$BtnLater = '',
+  [string]$BtnIgnore = ''
 )
 
 $ErrorActionPreference = 'Stop'
 
-# ---------- 阶段打点 + 落盘追踪 ----------
-# 每个阶段都向 stdout 打一行 {"stage":"..."}，Host 据此判断卡片进度；
-# 同时追加写入 %LOCALAPPDATA%\dsh-task-toast\card.log，
-# 即使 stdout 采集失败也能事后看到到底卡在哪一步（v1.6.0 排障关键）。
-# 注意：$env:LOCALAPPDATA 在部分宿主（Electron Node 子进程）里是空的，
-# 必须逐级回退，否则缓存目录推导失败 → 每次都走 4~5 秒的即时编译。
+# ---------- + ----------
+# stdout {"stage":"..."} Host
+# %LOCALAPPDATA%\dsh-task-toast\card.log
+# stdout v1.6.0
+# $env:LOCALAPPDATA Electron Node
+# 4~5
 function Get-CacheDir {
   $cand = @($env:LOCALAPPDATA, $env:APPDATA)
   if ($env:USERPROFILE) {
@@ -76,7 +89,7 @@ function TraceErr($stage, $msg) {
 
 Trace 'boot' ('"pid":' + $PID + ',"selfTest":' + $SelfTest + ',"toast":' + $Toast)
 
-# ---------- 主题：auto 时读系统设置 ----------
+# ---------- auto ----------
 $dark = $false
 if ($Theme -eq 'dark') {
   $dark = $true
@@ -87,21 +100,6 @@ if ($Theme -eq 'dark') {
   } catch { $dark = $false }
 }
 
-# 强调色：#RRGGBB → 0xFFRRGGBB（按 int32 有符号存储）
-# 注意：PowerShell 里 [int] 强转一个 > 2^31-1 的 uint32 会抛异常，必须先降到 int64 再回绕。
-$accentArgb = [int]-16745729  # 0xFF007AFF 兜底
-try {
-  $hex = ($Accent -replace '#', '').Trim()
-  if ($hex.Length -eq 6) {
-    $r = [Convert]::ToInt32($hex.Substring(0, 2), 16)
-    $g = [Convert]::ToInt32($hex.Substring(2, 2), 16)
-    $b = [Convert]::ToInt32($hex.Substring(4, 2), 16)
-    $raw = [int64]([int64]0xFF000000 -bor ($r -shl 16) -bor ($g -shl 8) -bor $b)
-    if ($raw -gt 0x7FFFFFFF) { $raw = $raw - 0x100000000 }
-    $accentArgb = [int]$raw
-  }
-} catch { }
-
 $src = @'
 using System;
 using System.Drawing;
@@ -111,81 +109,24 @@ using System.IO;
 using System.Net;
 using System.Runtime.InteropServices;
 using System.Text;
-// 注意：不要 using System.Threading —— 否则 Timer 与 System.Windows.Forms.Timer 歧义。
-// 需要线程池的地方一律写全限定名 System.Threading.ThreadPool。
 using System.Windows.Forms;
 
 namespace DshToast
 {
     public static class Native
     {
-        [StructLayout(LayoutKind.Sequential)]
-        public struct AccentPolicy
-        {
-            public int AccentState;
-            public int AccentFlags;
-            public int GradientColor;
-            public int AnimationId;
-        }
-
-        [StructLayout(LayoutKind.Sequential)]
-        public struct WindowCompositionAttributeData
-        {
-            public int Attribute;
-            public IntPtr Data;
-            public int SizeOfData;
-        }
-
-        [DllImport("user32.dll")]
-        public static extern int SetWindowCompositionAttribute(IntPtr hwnd, ref WindowCompositionAttributeData data);
-
         [DllImport("dwmapi.dll")]
         public static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int value, int size);
 
         [DllImport("shcore.dll")]
         public static extern int SetProcessDpiAwareness(int value);
 
-        public const int WCA_ACCENT_POLICY = 19;
-        public const int ACCENT_ENABLE_BLURBEHIND = 3;
-        public const int ACCENT_ENABLE_ACRYLICBLURBEHIND = 4;
+        [DllImport("user32.dll")]
+        public static extern int GetDpiForWindow(IntPtr hwnd);
+
         public const int DWMWA_USE_IMMERSIVE_DARK_MODE = 20;
         public const int DWMWA_WINDOW_CORNER_PREFERENCE = 33;
         public const int DWMWCP_ROUND = 2;
-
-        public static void EnableAcrylic(IntPtr hwnd, int gradientColor)
-        {
-            try
-            {
-                AccentPolicy policy = new AccentPolicy();
-                policy.AccentState = ACCENT_ENABLE_ACRYLICBLURBEHIND;
-                policy.AccentFlags = 2;
-                policy.GradientColor = gradientColor;
-                policy.AnimationId = 0;
-                int size = Marshal.SizeOf(typeof(AccentPolicy));
-                IntPtr ptr = Marshal.AllocHGlobal(size);
-                try
-                {
-                    Marshal.StructureToPtr(policy, ptr, false);
-                    WindowCompositionAttributeData data = new WindowCompositionAttributeData();
-                    data.Attribute = WCA_ACCENT_POLICY;
-                    data.SizeOfData = size;
-                    data.Data = ptr;
-                    int hr = SetWindowCompositionAttribute(hwnd, ref data);
-                    if (hr == 0)
-                    {
-                        policy.AccentState = ACCENT_ENABLE_BLURBEHIND;
-                        Marshal.StructureToPtr(policy, ptr, false);
-                        data.Data = ptr;
-                        SetWindowCompositionAttribute(hwnd, ref data);
-                    }
-                }
-                finally
-                {
-                    Marshal.FreeHGlobal(ptr);
-                }
-            }
-            catch { }
-        }
 
         public static void SetDark(IntPtr hwnd, bool dark)
         {
@@ -212,6 +153,18 @@ namespace DshToast
             try { SetProcessDpiAwareness(2); }
             catch { try { SetProcessDpiAwareness(1); } catch { } }
         }
+
+ /// <summary> DPI 0 </summary>
+        public static int WindowDpi(IntPtr hwnd)
+        {
+            try
+            {
+                int d = GetDpiForWindow(hwnd);
+                if (d > 0) return d;
+            }
+            catch { }
+            return 0;
+        }
     }
 
     public class CardArgs
@@ -227,27 +180,33 @@ namespace DshToast
         public int Slot = 0;
         public string CallbackUrl = "";
         public string Id = "";
+ // Host Unicode GBK
+        public string BtnView = "";
+        public string BtnLater = "";
+        public string BtnIgnore = "";
     }
 
+    /// <summary>
+ /// Windows
+ /// + 1px + / /
+ /// DPI
+    /// </summary>
     public class CardForm : Form
     {
         private CardArgs A;
         private float S = 1f;
 
-        private int CW, CH, PAD;
+        private int CW = 0, CH = 0, PAD = 0;
+        private Rectangle rIcon, rTitle, rBody, rIgnore, rLater, rView;
 
-        private Rectangle rView, rLater, rIgnore;
         private int hover = -1;
         private int pressed = -1;
-
-        private Timer anim;
-        private Timer life;
-        private int remain;
-        private int fadeDir = 1;
-        private double targetOpacity = 0.93;
         private bool closing = false;
 
-        private Color cBg, cTitle, cBody, cLine, cGhost, cGhostHover, cAccent, cIconFg;
+        private Timer life;
+        private int remain = 0;
+
+        private Color cBg, cTitle, cBody, cBorder, cGhost, cGhostHover, cPrimary, cPrimaryFg, cIconBg, cIconFg;
         private Font fTitle, fBody, fBtn;
         private string txtView, txtLater, txtIgnore;
 
@@ -256,75 +215,28 @@ namespace DshToast
             A = a;
             bool en = string.Equals(a.Locale, "en", StringComparison.OrdinalIgnoreCase);
 
-            txtView = en ? "View result" : "查看结果";
-            txtLater = en ? "Later" : "稍后";
-            txtIgnore = en ? "Dismiss" : "忽略";
-
-            if (a.Dark)
-            {
-                cBg = Color.FromArgb(30, 30, 32);
-                cTitle = Color.FromArgb(245, 245, 247);
-                cBody = Color.FromArgb(166, 166, 174);
-                cLine = Color.FromArgb(58, 58, 62);
-                cGhost = Color.FromArgb(250, 250, 252);
-                cGhostHover = Color.FromArgb(56, 56, 60);
-                // 单色方案：主按钮 / 图标 = 近白，勾 = 深色（不再使用皮肤强调色）
-                cAccent = Color.FromArgb(245, 245, 247);
-                cIconFg = Color.FromArgb(30, 30, 32);
-            }
-            else
-            {
-                cBg = Color.FromArgb(250, 250, 252);
-                cTitle = Color.FromArgb(28, 28, 30);
-                cBody = Color.FromArgb(96, 96, 104);
-                cLine = Color.FromArgb(226, 226, 232);
-                cGhost = Color.FromArgb(28, 28, 30);
-                cGhostHover = Color.FromArgb(236, 236, 241);
-                // 单色方案：主按钮 / 图标 = 近黑，勾 = 白色
-                cAccent = Color.FromArgb(28, 28, 30);
-                cIconFg = Color.White;
-            }
-
-            string family = en ? "Segoe UI" : "Microsoft YaHei UI";
-            try
-            {
-                fTitle = new Font(family, 11.5f, FontStyle.Bold, GraphicsUnit.Point);
-                fBody = new Font(family, 9.5f, FontStyle.Regular, GraphicsUnit.Point);
-                fBtn = new Font(family, 9f, FontStyle.Regular, GraphicsUnit.Point);
-            }
-            catch
-            {
-                fTitle = new Font(FontFamily.GenericSansSerif, 11.5f, FontStyle.Bold);
-                fBody = new Font(FontFamily.GenericSansSerif, 9.5f);
-                fBtn = new Font(FontFamily.GenericSansSerif, 9f);
-            }
+ // Host ASCII
+            txtView = !string.IsNullOrEmpty(a.BtnView) ? a.BtnView : (en ? "View result" : "View result");
+            txtLater = !string.IsNullOrEmpty(a.BtnLater) ? a.BtnLater : "Later";
+            txtIgnore = !string.IsNullOrEmpty(a.BtnIgnore) ? a.BtnIgnore : "Dismiss";
 
             FormBorderStyle = FormBorderStyle.None;
             ShowInTaskbar = false;
             TopMost = true;
             StartPosition = FormStartPosition.Manual;
-            BackColor = cBg;
             DoubleBuffered = true;
-            KeyPreview = false;
-            Opacity = 0.0;
+            KeyPreview = true;
+            AutoScaleMode = AutoScaleMode.None;
+            Opacity = 1.0;
             Text = "dsh-task-toast";
 
             SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer
                 | ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
 
-            Layout2();
-            PlaceWindow();
-            RebuildRegion();
-
-            anim = new Timer();
-            anim.Interval = 16;
-            anim.Tick += AnimTick;
-
             remain = a.TimeoutMs > 0 ? a.TimeoutMs : 10000;
             life = new Timer();
             life.Interval = 100;
             life.Tick += LifeTick;
-            life.Start();
         }
 
         protected override bool ShowWithoutActivation
@@ -332,44 +244,176 @@ namespace DshToast
             get { return true; }
         }
 
-        private float Scale()
+ // DPI
+        protected override void OnHandleCreated(EventArgs e)
         {
+            base.OnHandleCreated(e);
             try
             {
-                if (DeviceDpi > 0) return (float)DeviceDpi / 96f;
+                InitScale();
+                InitTheme();
+                InitFonts();
+                LayoutCard();
+                PlaceWindow();
+                Native.RoundCorners(Handle);
+                Native.SetDark(Handle, A.Dark);
             }
             catch { }
-            return 1f;
         }
 
-        private void Layout2()
+        private void InitScale()
         {
-            S = Scale();
-            CW = (int)(384 * S);
-            CH = (int)(152 * S);
-            PAD = (int)(18 * S);
+            float d = 0f;
+            try
+            {
+                int w = Native.WindowDpi(Handle);
+                if (w > 0) d = (float)w;
+            }
+            catch { }
+            if (d <= 0f)
+            {
+                try { if (DeviceDpi > 0) d = (float)DeviceDpi; } catch { }
+            }
+            if (d <= 0f)
+            {
+                try { using (Graphics g = CreateGraphics()) { d = g.DpiX; } } catch { }
+            }
+            if (d < 96f) d = 96f;
+            S = d / 96f;
+        }
+
+        private void InitTheme()
+        {
+            if (A.Dark)
+            {
+                cBg = Color.FromArgb(43, 43, 43);
+                cTitle = Color.FromArgb(255, 255, 255);
+                cBody = Color.FromArgb(201, 201, 201);
+                cBorder = Color.FromArgb(63, 63, 63);
+                cGhost = Color.FromArgb(255, 255, 255);
+                cGhostHover = Color.FromArgb(58, 58, 58);
+                cPrimary = Color.FromArgb(243, 243, 243);
+                cPrimaryFg = Color.FromArgb(31, 31, 31);
+                cIconBg = Color.FromArgb(243, 243, 243);
+                cIconFg = Color.FromArgb(31, 31, 31);
+            }
+            else
+            {
+                cBg = Color.FromArgb(247, 247, 247);
+                cTitle = Color.FromArgb(26, 26, 26);
+                cBody = Color.FromArgb(95, 95, 95);
+                cBorder = Color.FromArgb(220, 220, 220);
+                cGhost = Color.FromArgb(26, 26, 26);
+                cGhostHover = Color.FromArgb(233, 233, 233);
+                cPrimary = Color.FromArgb(26, 26, 26);
+                cPrimaryFg = Color.FromArgb(255, 255, 255);
+                cIconBg = Color.FromArgb(26, 26, 26);
+                cIconFg = Color.FromArgb(255, 255, 255);
+            }
+        }
+
+ /// <summary> 96dpi </summary>
+        private float Pix(float pt)
+        {
+            return (float)Math.Round(pt * 96f / 72f * S, 0);
+        }
+
+        private void InitFonts()
+        {
+            bool en = string.Equals(A.Locale, "en", StringComparison.OrdinalIgnoreCase);
+            string[] fams = en
+                ? new string[] { "Segoe UI", "Microsoft YaHei UI", "Arial" }
+                : new string[] { "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI", "Arial" };
+            string fam = null;
+            foreach (string f in fams)
+            {
+                try
+                {
+                    using (Font tmp = new Font(f, 12f))
+                    {
+                        if (string.Equals(tmp.Name, f, StringComparison.OrdinalIgnoreCase)) { fam = f; break; }
+                    }
+                }
+                catch { }
+            }
+            if (fam == null) fam = FontFamily.GenericSansSerif.Name;
+            try
+            {
+                fTitle = new Font(fam, Pix(11.5f), FontStyle.Bold, GraphicsUnit.Pixel);
+                fBody = new Font(fam, Pix(9.5f), FontStyle.Regular, GraphicsUnit.Pixel);
+                fBtn = new Font(fam, Pix(9f), FontStyle.Regular, GraphicsUnit.Pixel);
+            }
+            catch
+            {
+                fTitle = new Font(FontFamily.GenericSansSerif, Pix(11.5f), FontStyle.Bold, GraphicsUnit.Pixel);
+                fBody = new Font(FontFamily.GenericSansSerif, Pix(9.5f), FontStyle.Regular, GraphicsUnit.Pixel);
+                fBtn = new Font(FontFamily.GenericSansSerif, Pix(9f), FontStyle.Regular, GraphicsUnit.Pixel);
+            }
+        }
+
+        private int MeasureBtn(string t)
+        {
+            int w = TextRenderer.MeasureText(t, fBtn).Width;
+            return w + (int)Math.Round(22f * S);
+        }
+
+        private void LayoutCard()
+        {
+            PAD = (int)Math.Round(16f * S);
+            int iconSize = (int)Math.Round(22f * S);
+            int gapIcon = (int)Math.Round(10f * S);
+            int gapTitleBody = (int)Math.Round(8f * S);
+            int gapBodyBtn = (int)Math.Round(16f * S);
+            int btnH = (int)Math.Round(30f * S);
+            int btnGap = (int)Math.Round(8f * S);
+
+            Rectangle wa = Screen.FromPoint(System.Windows.Forms.Cursor.Position).WorkingArea;
+            CW = (int)Math.Round(380f * S);
+            int maxW = wa.Width - (int)Math.Round(40f * S);
+            if (CW > maxW) CW = maxW;
+            if (CW < (int)Math.Round(200f * S)) CW = (int)Math.Round(200f * S);
+
+            int contentW = CW - PAD * 2;
+
+ //
+            int titleH = fTitle.Height;
+            string body = A.Body == null ? "" : A.Body.Trim();
+            int bodyH = 0;
+            if (body.Length > 0)
+            {
+                Size sz = TextRenderer.MeasureText(body, fBody, new Size(contentW, int.MaxValue),
+                    TextFormatFlags.WordBreak | TextFormatFlags.NoPrefix);
+                bodyH = sz.Height;
+            }
+
+            int headH = Math.Max(iconSize, titleH);
+            CH = PAD + headH + (bodyH > 0 ? gapTitleBody + bodyH : 0) + gapBodyBtn + btnH + PAD;
+
             ClientSize = new Size(CW, CH);
 
-            int bh = (int)(30 * S);
-            int by = CH - PAD - bh;
+            rIcon = new Rectangle(PAD, PAD + (headH - iconSize) / 2, iconSize, iconSize);
+            int tx = rIcon.Right + gapIcon;
+            int titleW = CW - PAD - tx;
+            if (titleW < (int)Math.Round(40f * S)) titleW = (int)Math.Round(40f * S);
+            rTitle = new Rectangle(tx, PAD + (headH - titleH) / 2, titleW, titleH);
 
-            int wView = Math.Max((int)(84 * S), TextRenderer.MeasureText(txtView, fBtn).Width + (int)(28 * S));
-            int wLater = Math.Max((int)(52 * S), TextRenderer.MeasureText(txtLater, fBtn).Width + (int)(26 * S));
-            int wIgnore = Math.Max((int)(52 * S), TextRenderer.MeasureText(txtIgnore, fBtn).Width + (int)(26 * S));
-            int gap = (int)(8 * S);
+            rBody = new Rectangle(PAD, PAD + headH + gapTitleBody, contentW, bodyH);
 
-            int right = CW - PAD;
-            rView = new Rectangle(right - wView, by, wView, bh);
-            rLater = new Rectangle(rView.Left - gap - wLater, by, wLater, bh);
-            rIgnore = new Rectangle(rLater.Left - gap - wIgnore, by, wIgnore, bh);
+            int wView = MeasureBtn(txtView);
+            int wLater = MeasureBtn(txtLater);
+            int wIgnore = MeasureBtn(txtIgnore);
+            int by = CH - PAD - btnH;
+            int bx = CW - PAD - wView;
+            rView = new Rectangle(bx, by, wView, btnH);
+            rLater = new Rectangle(bx - btnGap - wLater, by, wLater, btnH);
+            rIgnore = new Rectangle(rLater.Left - btnGap - wIgnore, by, wIgnore, btnH);
         }
 
         private void PlaceWindow()
         {
-            // 注意：Cursor.Position 是静态成员，不能用窗体的 Cursor 属性去点（CS0176）
             Rectangle wa = Screen.FromPoint(System.Windows.Forms.Cursor.Position).WorkingArea;
-            int margin = (int)(20 * S);
-            int gap = (int)(12 * S);
+            int margin = (int)Math.Round(20f * S);
+            int gap = (int)Math.Round(12f * S);
             int off = A.Slot * (CH + gap);
             int x, y;
 
@@ -379,8 +423,91 @@ namespace DshToast
 
             x = left ? (wa.Left + margin) : (wa.Right - CW - margin);
             y = top ? (wa.Top + margin + off) : (wa.Bottom - CH - margin - off);
+            if (y < wa.Top) y = wa.Top + margin;
 
             Location = new Point(x, y);
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            Graphics g = e.Graphics;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
+
+            using (SolidBrush bg = new SolidBrush(cBg))
+            {
+                g.FillRectangle(bg, ClientRectangle);
+            }
+
+ // 1px Windows
+            using (Pen pen = new Pen(cBorder, 1f))
+            {
+                g.DrawRectangle(pen, 0, 0, CW - 1, CH - 1);
+            }
+
+ // +
+            using (GraphicsPath ip = RoundPath(rIcon, (int)Math.Round(6f * S)))
+            using (SolidBrush ib = new SolidBrush(cIconBg))
+            {
+                g.FillPath(ib, ip);
+            }
+            using (Pen check = new Pen(cIconFg, (float)Math.Round(1.9f * S, 1)))
+            {
+                check.StartCap = LineCap.Round;
+                check.EndCap = LineCap.Round;
+                check.LineJoin = LineJoin.Round;
+                float cx = rIcon.X, cy = rIcon.Y;
+                g.DrawLines(check, new PointF[] {
+                    new PointF(cx + 6.0f * S, cy + 11.6f * S),
+                    new PointF(cx + 9.4f * S, cy + 15.2f * S),
+                    new PointF(cx + 16.2f * S, cy + 7.4f * S)
+                });
+            }
+
+ //
+            TextRenderer.DrawText(g, A.Title == null ? "" : A.Title, fTitle, rTitle, cTitle,
+                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix
+                | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine);
+
+ //
+            if (rBody.Height > 0)
+            {
+                TextRenderer.DrawText(g, A.Body == null ? "" : A.Body, fBody, rBody, cBody,
+                    TextFormatFlags.Left | TextFormatFlags.Top | TextFormatFlags.NoPrefix | TextFormatFlags.WordBreak);
+            }
+
+            DrawButton(g, rIgnore, txtIgnore, false, hover == 2);
+            DrawButton(g, rLater, txtLater, false, hover == 1);
+            DrawButton(g, rView, txtView, true, hover == 0);
+        }
+
+        private void DrawButton(Graphics g, Rectangle r, string text, bool primary, bool isHover)
+        {
+            using (GraphicsPath p = RoundPath(r, (int)Math.Round(8f * S)))
+            {
+                if (primary)
+                {
+                    Color fill = cPrimary;
+                    if (pressed == 0 && isHover) fill = ControlPaint.Dark(cPrimary, 0.06f);
+                    else if (isHover) fill = ControlPaint.Light(cPrimary, 0.06f);
+                    using (SolidBrush b = new SolidBrush(fill))
+                    {
+                        g.FillPath(b, p);
+                    }
+                }
+                else if (isHover)
+                {
+                    using (SolidBrush b = new SolidBrush(cGhostHover))
+                    {
+                        g.FillPath(b, p);
+                    }
+                }
+            }
+
+            Color fg = primary ? cPrimaryFg : cGhost;
+            TextRenderer.DrawText(g, text, fBtn, r, fg,
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter
+                | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine);
         }
 
         private static GraphicsPath RoundPath(Rectangle r, int radius)
@@ -400,196 +527,6 @@ namespace DshToast
             path.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
             path.CloseFigure();
             return path;
-        }
-
-        private void RebuildRegion()
-        {
-            try
-            {
-                using (GraphicsPath p = RoundPath(new Rectangle(0, 0, CW, CH), (int)(14 * S)))
-                {
-                    Region old = Region;
-                    Region = new Region(p);
-                    if (old != null) old.Dispose();
-                }
-            }
-            catch { }
-        }
-
-        protected override void OnHandleCreated(EventArgs e)
-        {
-            base.OnHandleCreated(e);
-            Native.RoundCorners(Handle);
-            Native.SetDark(Handle, A.Dark);
-            int tint = A.Dark ? unchecked((int)0xC818181A) : unchecked((int)0xD0F2F2F6);
-            Native.EnableAcrylic(Handle, tint);
-        }
-
-        protected override void OnShown(EventArgs e)
-        {
-            base.OnShown(e);
-            anim.Start();
-        }
-
-        private void AnimTick(object sender, EventArgs e)
-        {
-            double op = Opacity + fadeDir * 0.13;
-            if (fadeDir > 0)
-            {
-                if (op >= targetOpacity) { op = targetOpacity; anim.Stop(); }
-            }
-            else
-            {
-                if (op <= 0.0)
-                {
-                    op = 0.0;
-                    anim.Stop();
-                    try { life.Stop(); } catch { }
-                    Close();
-                    return;
-                }
-            }
-            try { Opacity = op; } catch { anim.Stop(); }
-        }
-
-        private void LifeTick(object sender, EventArgs e)
-        {
-            if (closing) return;
-            bool inside = ClientRectangle.Contains(PointToClient(System.Windows.Forms.Cursor.Position));
-            if (inside) return; // 鼠标停在卡片上时暂停倒计时
-            remain -= life.Interval;
-            if (remain <= 0)
-            {
-                closing = true;
-                life.Stop();
-                fadeDir = -1;
-                anim.Start();
-            }
-        }
-
-        protected override void OnPaint(PaintEventArgs e)
-        {
-            Graphics g = e.Graphics;
-            g.SmoothingMode = SmoothingMode.AntiAlias;
-            g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
-
-            using (SolidBrush bg = new SolidBrush(cBg))
-            {
-                g.FillRectangle(bg, ClientRectangle);
-            }
-
-            // 顶部内高光（毛玻璃质感的关键细节）
-            using (Pen hl = new Pen(Color.FromArgb(A.Dark ? 26 : 150, 255, 255, 255), 1f))
-            {
-                g.DrawLine(hl, 1, 1, CW - 2, 1);
-            }
-
-            // 外描边
-            using (GraphicsPath edge = RoundPath(new Rectangle(0, 0, CW - 1, CH - 1), (int)(14 * S)))
-            using (Pen pen = new Pen(cLine, 1f))
-            {
-                g.DrawPath(pen, edge);
-            }
-
-            // 图标：圆角方块 + 对勾
-            int iconSize = (int)(24 * S);
-            Rectangle rIcon = new Rectangle(PAD, (int)(20 * S), iconSize, iconSize);
-            using (GraphicsPath ip = RoundPath(rIcon, (int)(7 * S)))
-            using (SolidBrush ib = new SolidBrush(cAccent))
-            {
-                g.FillPath(ib, ip);
-            }
-            using (Pen check = new Pen(cIconFg, 2.2f * S))
-            {
-                check.StartCap = LineCap.Round;
-                check.EndCap = LineCap.Round;
-                check.LineJoin = LineJoin.Round;
-                float cx = rIcon.X, cy = rIcon.Y;
-                g.DrawLines(check, new PointF[] {
-                    new PointF(cx + 6.5f * S, cy + 12.2f * S),
-                    new PointF(cx + 10.4f * S, cy + 16.2f * S),
-                    new PointF(cx + 17.4f * S, cy + 8.0f * S)
-                });
-            }
-
-            // 标题
-            int tx = PAD + iconSize + (int)(10 * S);
-            int tw = CW - tx - PAD;
-            Rectangle rTitle = new Rectangle(tx, (int)(19 * S), tw, (int)(24 * S));
-            TextRenderer.DrawText(g, A.Title, fTitle, rTitle, cTitle,
-                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix
-                | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine);
-
-            // 正文
-            if (!string.IsNullOrEmpty(A.Body))
-            {
-                Rectangle rBody = new Rectangle(PAD, (int)(54 * S), CW - PAD * 2, (int)(42 * S));
-                TextRenderer.DrawText(g, A.Body, fBody, rBody, cBody,
-                    TextFormatFlags.Left | TextFormatFlags.Top | TextFormatFlags.NoPrefix | TextFormatFlags.WordBreak);
-            }
-
-            DrawButton(g, rIgnore, txtIgnore, false, hover == 2);
-            DrawButton(g, rLater, txtLater, false, hover == 1);
-            DrawButton(g, rView, txtView, true, hover == 0);
-        }
-
-        private void DrawButton(Graphics g, Rectangle r, string text, bool primary, bool isHover)
-        {
-            using (GraphicsPath p = RoundPath(r, (int)(9 * S)))
-            {
-                if (primary)
-                {
-                    // 单色方案：近白（深色）/ 近黑（浅色），悬停轻微变化
-                    Color fill = cAccent;
-                    if (isHover) fill = A.Dark ? Color.FromArgb(228, 228, 232) : Color.FromArgb(56, 56, 60);
-                    if (pressed == 0 && isHover) fill = A.Dark ? Color.FromArgb(210, 210, 216) : Color.FromArgb(76, 76, 82);
-                    using (SolidBrush b = new SolidBrush(fill))
-                    {
-                        g.FillPath(b, p);
-                    }
-                }
-                else
-                {
-                    if (isHover)
-                    {
-                        using (SolidBrush b = new SolidBrush(cGhostHover))
-                        {
-                            g.FillPath(b, p);
-                        }
-                    }
-                }
-            }
-
-            Color fg = primary ? Color.White : cGhost;
-            TextRenderer.DrawText(g, text, fBtn, r, fg,
-                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter
-                | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine);
-        }
-
-        private static Color Lighten(Color c, float amount)
-        {
-            float r = c.R, g = c.G, b = c.B;
-            if (amount >= 0)
-            {
-                r = r + (255 - r) * amount;
-                g = g + (255 - g) * amount;
-                b = b + (255 - b) * amount;
-            }
-            else
-            {
-                float k = 1 + amount;
-                r = r * k;
-                g = g * k;
-                b = b * k;
-            }
-            return Color.FromArgb(c.A, Clamp((int)r), Clamp((int)g), Clamp((int)b));
-        }
-
-        private static int Clamp(int v)
-        {
-            if (v < 0) return 0;
-            if (v > 255) return 255;
-            return v;
         }
 
         private int HitTest(Point p)
@@ -640,7 +577,6 @@ namespace DshToast
 
         protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
         {
-            // Esc = 忽略，Enter = 查看结果
             if (keyData == Keys.Escape) { Act("ignore"); return true; }
             if (keyData == Keys.Enter) { Act("view"); return true; }
             return base.ProcessCmdKey(ref msg, keyData);
@@ -661,15 +597,41 @@ namespace DshToast
                     Card.Post(url, json);
                 });
             }
-            fadeDir = -1;
-            anim.Start();
+            Close();
+        }
+
+        private void LifeTick(object sender, EventArgs e)
+        {
+            if (closing) return;
+            bool inside = ClientRectangle.Contains(PointToClient(System.Windows.Forms.Cursor.Position));
+            if (inside) return; // pause the countdown while the cursor rests on the card
+            remain -= life.Interval;
+            if (remain <= 0)
+            {
+                closing = true;
+                life.Stop();
+                Close();
+            }
         }
 
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
             try { life.Stop(); } catch { }
-            try { anim.Stop(); } catch { }
             base.OnFormClosing(e);
+        }
+
+ /// <summary> PNG </summary>
+        public void SaveSnapshot(string path)
+        {
+            try
+            {
+                using (Bitmap bmp = new Bitmap(Math.Max(1, CW), Math.Max(1, CH)))
+                {
+                    DrawToBitmap(bmp, new Rectangle(0, 0, CW, CH));
+                    bmp.Save(path, System.Drawing.Imaging.ImageFormat.Png);
+                }
+            }
+            catch { }
         }
     }
 
@@ -726,7 +688,7 @@ namespace DshToast
 
 $referenced = @('System', 'System.Core', 'System.Drawing', 'System.Windows.Forms')
 
-# ---------- 编译缓存：避免每次通知都等 CodeDom 编译（约 0.5s） ----------
+# ---------- CodeDom 0.5s ----------
 $asms = $null
 try {
   $md5 = [System.Security.Cryptography.MD5]::Create()
@@ -737,7 +699,7 @@ try {
   $dll = Join-Path $cacheDir ("DshToastCard-$hash.dll")
   if (-not (Test-Path $dll)) {
     Trace 'compile-start' '"cached":false'
-    # 先清理旧缓存，避免堆积
+ #
     Get-ChildItem -Path $cacheDir -Filter 'DshToastCard-*.dll' -ErrorAction SilentlyContinue |
       Remove-Item -Force -ErrorAction SilentlyContinue
     Add-Type -TypeDefinition $src -ReferencedAssemblies $referenced -OutputAssembly $dll -ErrorAction Stop
@@ -745,35 +707,35 @@ try {
   } else {
     Trace 'compile-start' '"cached":true'
   }
-  # 只需要把程序集载进来，不用 -PassThru（省一次反射枚举）
+ # -PassThru
   Add-Type -Path $dll -ErrorAction Stop
   Trace 'compiled' ('"cached":' + $(if (Test-Path $dll) { 'true' } else { 'false' }))
 } catch {
   TraceErr 'compile-fail' $_.Exception.Message
-  # 缓存不可用（权限 / 路径）→ 退回即时编译
+ # /
   try {
     Add-Type -TypeDefinition $src -ReferencedAssemblies $referenced -ErrorAction Stop
     Trace 'compiled' '"cached":false,"fallback":true'
   } catch {
     TraceErr 'compile-fail-final' $_.Exception.Message
-    [Console]::Error.WriteLine('dsh-task-toast card: 编译失败 ' + $_.Exception.Message)
+    [Console]::Error.WriteLine('dsh-task-toast card: compile failed ' + $_.Exception.Message)
     exit 1
   }
 }
 
-# ---------- 自检：只验证能否编译 / 载入，不创建任何窗口 ----------
-# Host 在启动几秒后会跑一次 `-SelfTest 1`，把结果写进 dsh 日志，
-# 这样「卡片能不能用」不必等到真的来一条通知才知道。
+# ---------- / ----------
+# Host `-SelfTest 1` dsh
+#
 if ($SelfTest -eq 1) {
   try { [DshToast.Native]::SetDpiAware() } catch { }
   Trace 'selftest-ok' ''
-  # 兼容 Host 的旧判定式：必须含 "ok":true
+ # Host "ok":true
   [Console]::Out.WriteLine('{"ok":true,"stage":"compiled","card":"DshToast.CardForm"}')
   [Console]::Out.Flush()
   exit 0
 }
 
-# ---------- 启动前确保 DPI 感知 ----------
+# ---------- DPI ----------
 try { [DshToast.Native]::SetDpiAware() } catch { }
 
 [System.Windows.Forms.Application]::EnableVisualStyles()
@@ -786,15 +748,17 @@ $a.SessionId = $SessionId
 $a.Locale = $Locale
 $a.Position = $Position
 $a.Dark = $dark
-$a.AccentArgb = $accentArgb
 $a.TimeoutMs = $Timeout
 $a.Slot = $Slot
 $a.CallbackUrl = $CallbackUrl
 $a.Id = $Id
+$a.BtnView = $BtnView
+$a.BtnLater = $BtnLater
+$a.BtnIgnore = $BtnIgnore
 
-# ---------- 可选：同时发一条 Windows 原生通知（横幅 + 通知中心） ----------
-# 用户要求「弹卡片的同时也进系统通知栏」，这里用 WinRT Toast，
-# AppID 用 PowerShell 自带的注册 ID，横幅会直接浮在所有窗口之上并沉淀到通知中心。
+# ---------- Windows + ----------
+# WinRT Toast
+# AppID PowerShell ID
 if ($Toast -eq 1) {
   try {
     [void][Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime]
@@ -821,15 +785,23 @@ if ($Toast -eq 1) {
   }
 }
 
-# 只要通知、不要卡片窗口（卡片起不来时的兜底通道）
+#
 if ($ToastOnly -eq 1) { exit 0 }
 
 $form = New-Object -TypeName DshToast.CardForm -ArgumentList (,$a)
 Trace 'form-created' ''
 
-# 窗口真正显示后向 Host 回报一行 stdout —— Host 以此判定「卡片可用」，
-# 超时未回报（编译失败 / 启动异常）就会把通知转回应用内呈现，不会静默丢通知。
+# Host stdout Host
+# /
 $form.Add_Shown({ Trace 'shown' '' })
+
+# PNG
+if ($Snapshot) {
+  $form.Add_Shown({
+    try { $form.SaveSnapshot($Snapshot) } catch { }
+    $form.Close()
+  })
+}
 
 try {
   Trace 'run-enter' ''

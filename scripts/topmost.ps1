@@ -1,18 +1,19 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
-  scripts/topmost.ps1 — 把 dsh 桌面客户端窗口提到「所有应用之上」，或恢复原状。
+  scripts/topmost.ps1 - raise the dsh desktop client window above every other
+  application, or restore it to its normal state.
 
-  用法：
+  Usage:
     powershell -NoProfile -ExecutionPolicy Bypass -File scripts/topmost.ps1 -ProcessId <pid> -Action topmost
     powershell -NoProfile -ExecutionPolicy Bypass -File scripts/topmost.ps1 -ProcessId <pid> -Action restore
     powershell -NoProfile -ExecutionPolicy Bypass -File scripts/topmost.ps1 -ProcessId <pid> -Action topmost -Duration 8000
 
-  参数：
-    -ProcessId  dsh 桌面客户端主进程 PID（插件 Host 侧传 process.ppid）
-    -Action     topmost = 置顶；restore = 取消置顶；restore 之外的别名 none
-    -Duration   >0 时，置顶后等待指定毫秒再自动恢复（一次性"临时置顶"）
+  Parameters:
+    -ProcessId  PID of the dsh desktop client main process (the plugin Host passes process.ppid)
+    -Action     topmost = raise; restore = restore; any other alias is treated as none
+    -Duration   when > 0, wait that many ms before restoring automatically (one-shot topmost)
 
-  输出：stdout 一行 JSON，例如
+  Output: one JSON line on stdout, e.g.
     {"ok":true,"action":"topmost","windows":1,"handles":[12345],"applied":true}
 #>
 param(
@@ -101,7 +102,7 @@ public class DshTopmost
   {
     if (topmost) {
       if (IsIconic(h)) ShowWindow(h, SW_RESTORE);
-      // 不抢焦点：NOACTIVATE，只是把窗口层级抬到最上层
+ // NOACTIVATE
       SetWindowPos(h, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
     } else {
       SetWindowPos(h, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);

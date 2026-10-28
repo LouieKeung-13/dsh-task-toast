@@ -80,15 +80,30 @@ try {
   process.exit(1)
 }
 
-// 6) PowerShell 脚本必须使用 CRLF：Windows PowerShell 5.1 的 here-string（@'...'@）
-//    在 LF-only 文件里会解析错位，导致整个脚本报语法错误、卡片进程秒退（v1.5.2 教训）。
+// 6) PowerShell 脚本必须使用 CRLF + UTF-8 BOM：
+//    · CRLF —— Windows PowerShell 5.1 的 here-string（@'...'@）在 LF-only 文件里
+//      会解析错位，整个脚本报语法错误、卡片进程秒退（v1.5.2 教训）。
+//    · BOM  —— PS 5.1 读取 .ps1 时若无 BOM 会按系统 ANSI 代码页（中文系统=GBK）
+//      解码，脚本内的中文字面量会变成乱码（v1.6.x 的「按钮文字乱码」根因）。
+//      双重保险：脚本本身保持纯 ASCII，中文一律由 Host 通过命令行参数传入。
 for (const rel of ['scripts/topmost.ps1', 'scripts/card.ps1']) {
   const p = join(root, rel)
-  let txt = readFileSync(p, 'utf8')
-  const fixed = txt.replace(/\r?\n/g, '\r\n')
-  if (fixed !== txt) {
-    writeFileSync(p, fixed)
-    console.log('[build-static] ' + rel + ' 已规范为 CRLF（PS 5.1 here-string 兼容）')
+  let buf = readFileSync(p)
+  // 去 BOM → 统一 CRLF → 加回 BOM
+  let txt = buf.toString('utf8').replace(/^\uFEFF/, '')
+  txt = txt.replace(/\r?\n/g, '\r\n')
+  const out = Buffer.concat([Buffer.from([0xEF, 0xBB, 0xBF]), Buffer.from(txt, 'utf8')])
+  if (!buf.equals(out)) {
+    writeFileSync(p, out)
+    console.log('[build-static] ' + rel + ' 已规范为 CRLF + UTF-8 BOM（PS 5.1 兼容）')
+  }
+  // 断言：脚本内不得出现非 ASCII 的可执行内容（注释也要清干净，避免误解）
+  const nonAscii = txt.split('\n')
+    .map((l, i) => [i + 1, l])
+    .filter(([, l]) => /[^\x00-\x7F]/.test(l))
+  if (nonAscii.length) {
+    console.warn('[build-static] ' + rel + ' 仍含 ' + nonAscii.length + ' 行非 ASCII：')
+    nonAscii.slice(0, 5).forEach(([n, l]) => console.warn('   ' + n + ': ' + l.trim().slice(0, 90)))
   }
 }
 

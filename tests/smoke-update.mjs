@@ -296,4 +296,33 @@ assert.deepEqual(exported.inject, ['slots', 'sessions', 'timer'])
 assert.equal(typeof exported.apply, 'function')
 console.log('✓ client bundle 导出 apply / inject 正确')
 
+// ================= 9) PowerShell 脚本的编码与换行（v1.5.2 / v1.7.0 教训） =================
+// · CRLF —— PS 5.1 的 here-string 在 LF-only 文件里解析错位 → 卡片进程秒退
+// · BOM  —— PS 5.1 无 BOM 时按 ANSI(GBK) 解码 → 脚本内中文字面量变乱码
+// · 纯 ASCII —— 纵深防御：脚本里不放任何非 ASCII 字符，中文一律走命令行参数
+for (const rel of ['scripts/card.ps1', 'scripts/topmost.ps1']) {
+  const buf = readFileSync(join(root, rel))
+  assert.ok(buf[0] === 0xEF && buf[1] === 0xBB && buf[2] === 0xBF, rel + ' 缺少 UTF-8 BOM（PS 5.1 会按 GBK 解码）')
+  const text = buf.toString('utf8').replace(/^\uFEFF/, '')
+  const bare = (text.match(/(?<!\r)\n/g) || []).length
+  assert.equal(bare, 0, rel + ' 存在 LF-only 换行（here-string 会解析错位）')
+  const nonAscii = text.split('\n').filter((l) => /[^\x00-\x7F]/.test(l))
+  assert.equal(nonAscii.length, 0, rel + ' 含非 ASCII 字符（会乱码）：' + nonAscii.slice(0, 3).join(' | '))
+}
+console.log('✓ ps1 脚本：CRLF + UTF-8 BOM + 纯 ASCII')
+
+// ================= 10) 卡片按钮文案必须走命令行参数 =================
+// 内嵌 C# 里若出现中文字面量，PS 5.1 会解码错乱 → 按钮显示为乱码。
+const cardPs = readFileSync(join(root, 'scripts', 'card.ps1'), 'utf8')
+const csharp = cardPs.slice(cardPs.indexOf("$src = @'"), cardPs.indexOf("'@"))
+assert.ok(csharp, '未能提取内嵌 C# 源码')
+assert.equal(/[一-鿿]/.test(csharp), false, '内嵌 C# 仍含中文字面量')
+assert.ok(cardPs.includes('$BtnView'), 'card.ps1 缺少 -BtnView 参数')
+const hostSrc = readFileSync(join(root, 'src', 'static', 'host.js'), 'utf8')
+assert.ok(hostSrc.includes("'-BtnView'"), 'host 未传 -BtnView')
+assert.ok(hostSrc.includes("'-BtnLater'"), 'host 未传 -BtnLater')
+assert.ok(hostSrc.includes("'-BtnIgnore'"), 'host 未传 -BtnIgnore')
+assert.ok(/viewResult:\s*'查看结果'/.test(hostSrc), 'host I18N 缺少中文按钮文案')
+console.log('✓ 卡片按钮文案走命令行参数（Unicode 安全）')
+
 console.log('\n全部冒烟测试通过 ✅')

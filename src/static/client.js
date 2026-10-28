@@ -106,8 +106,6 @@ function ui(locale) {
     cardUnsupported: '当前环境不支持独立卡片（仅 Windows 桌面客户端）',
     cardSelfTest: '卡片自检',
     cardSelfOk: '通过（可正常弹出）',
-    cardLastFail: '最近一次卡片未显示',
-    cardLog: '卡片追踪日志',
     // ---- 更新（新增：强制重装） ----
     forceReinstall: '强制重装（忽略版本）',
     forceReinstalling: '重装中…',
@@ -179,8 +177,6 @@ function ui(locale) {
     cardUnsupported: 'Standalone card is unavailable here (Windows desktop client only)',
     cardSelfTest: 'Card self-test',
     cardSelfOk: 'passed (card can be shown)',
-    cardLastFail: 'Last card attempt failed',
-    cardLog: 'Card trace log',
     // ---- Update (force reinstall) ----
     forceReinstall: 'Force reinstall (ignore version)',
     forceReinstalling: 'Reinstalling…',
@@ -819,17 +815,6 @@ const apply = async (ctx) => {
       (((cfg.topmost && cfg.topmost.mode) || 'card') === 'card' && upd && upd.cardSelfTest && upd.cardSelfTest !== 'pending')
         ? React.createElement('p', { className: 'dsh-tt-hint' },
           t.cardSelfTest + ' · ' + (upd.cardSelfTest === 'ok' ? t.cardSelfOk : String(upd.cardSelfTest).slice(0, 120)))
-        : null,
-      (((cfg.topmost && cfg.topmost.mode) || 'card') === 'card' && upd && upd.lastCard && upd.lastCard.ok === false)
-        ? React.createElement('p', { className: 'dsh-tt-hint' },
-          t.cardLastFail + '：' + String(upd.lastCard.error || '').slice(0, 160)
-          + (upd.lastCard.stage ? ' · stage=' + upd.lastCard.stage : '')
-          + (upd.lastCard.at ? ' · ' + new Date(upd.lastCard.at).toLocaleTimeString() : ''))
-        : null,
-      (((cfg.topmost && cfg.topmost.mode) || 'card') === 'card' && upd && upd.lastCard && upd.lastCard.ok === false && upd.cardLog)
-        ? React.createElement(React.Fragment, null,
-          React.createElement('p', { className: 'dsh-tt-hint' }, t.cardLog + (upd.cardLogPath ? ' · ' + upd.cardLogPath : '')),
-          React.createElement('pre', { className: 'dsh-tt-log' }, String(upd.cardLog).slice(-1200)))
         : null,
 
       // ---------- 版本与更新 ----------

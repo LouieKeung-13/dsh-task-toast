@@ -92,6 +92,9 @@ const I18N = {
     testTitle: '测试通知',
     testBody: '这是一条来自任务提示插件的测试消息，用于验证通知链路。',
     cardProbeBody: '如果你看到这张卡片浮在所有窗口之上，说明独立卡片工作正常。点任意按钮即可关闭。',
+    viewResult: '查看结果',
+    later: '稍后',
+    dismiss: '忽略',
     updateTitle: (v) => '插件有新版本 ' + v,
     updateBody: (v, c) => '当前 ' + c + ' · 最新 ' + v + '。点击「更新」复制更新命令，或在设置页一键更新（完成后需重启 dsh）。',
   },
@@ -103,6 +106,9 @@ const I18N = {
     testTitle: 'Test notification',
     testBody: 'This is a test message from the task-toast plugin, used to verify the pipeline.',
     cardProbeBody: 'If this card floats above every window, the standalone card works. Click any button to close it.',
+    viewResult: 'View result',
+    later: 'Later',
+    dismiss: 'Dismiss',
     updateTitle: (v) => 'Plugin update available: ' + v,
     updateBody: (v, c) => 'Installed ' + c + ' · latest ' + v + '. Click “Update” to copy the command, or use one-click update in Settings (restart dsh afterwards).',
   },
@@ -395,6 +401,7 @@ export default {
     /** 卡片启动参数（card.ps1） */
     function cardArgs(item, slot, extra) {
       const id = String(item.seq)
+      const t = i18n(config)
       const args = [
         '-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass',
         '-File', CARD_SCRIPT,
@@ -408,6 +415,11 @@ export default {
         '-Timeout', String(cardTimeoutMs()),
         '-Slot', String(slot),
         '-Id', id,
+        // 按钮文案走命令行参数（Unicode 安全）：card.ps1 是 UTF-8 无 BOM，
+        // Windows PowerShell 5.1 会按 GBK 解码，脚本内的中文字面量必然变乱码。
+        '-BtnView', t.viewResult,
+        '-BtnLater', t.later,
+        '-BtnIgnore', t.dismiss,
       ]
       if (selfPort) args.push('-CallbackUrl', 'http://127.0.0.1:' + selfPort + '/dsh-task-toast/card-action')
       if (extra && extra.length) for (const a of extra) args.push(a)
