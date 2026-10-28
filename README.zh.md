@@ -170,6 +170,13 @@ dsh plugin --profile web add github:LouieKeung-13/dsh-task-toast
 
 ### 版本记录
 
+- **v1.6.2** —— 修掉「一键更新点了却提示失败」的版本发现缺陷：
+  - 版本检查原来只看 `releases/latest`。如果仓库只推了 tag、没有发 Release，
+    它就会返回上一个旧版本号，于是自更新的**防降级**逻辑拒绝覆盖，
+    表现就是「明明有新版本，更新却失败」。
+  - 现在同时读 `releases/latest` 与 `tags` 列表，取**版本号更大的那个**，
+    从此不再依赖是否发过 Release。
+
 - **v1.6.1** —— 堵死「更新一次之后卡片又弹不出来」的复发通道：
   - 仓库的 `core.autocrlf=true` 会把 `scripts/*.ps1` **以 LF 存进 GitHub**，
     而自更新是从 GitHub 直接下载文件内容落盘的 —— 也就是说**每次自更新都会把卡片脚本

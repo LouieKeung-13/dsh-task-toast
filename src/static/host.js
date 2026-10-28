@@ -149,36 +149,54 @@ export default {
       return buildUpdateCommand(resolveProfile())
     }
 
-    /** 拉取上游最新版本：优先 releases/latest，失败回落 tags 列表。 */
+    /**
+     * 拉取上游最新版本：同时看 releases/latest 与 tags，取**版本号更大的那个**。
+     * 为什么要两个都看：仓库可能只推了 tag 而没有发 Release（GitHub 网页或自动化
+     * 没走发布流程），此时 releases/latest 会返回上一个旧版本，于是「一键更新」
+     * 会因为防降级被拒——看起来就像更新功能坏了。
+     */
     async function fetchLatest() {
       const ctrl = new AbortController()
       const to = setTimeout(() => { try { ctrl.abort() } catch (e) { /* ignore */ } }, 8000)
       const headers = { Accept: 'application/vnd.github+json', 'User-Agent': 'dsh-task-toast' }
+      const candidates = []
       try {
-        let res = await fetch('https://api.github.com/repos/' + REPO + '/releases/latest', { headers: headers, signal: ctrl.signal })
-        if (res.ok) {
-          const j = await res.json()
-          const tag = j && (j.tag_name || j.name)
-          if (tag) {
-            return {
-              version: String(tag).replace(/^v/i, ''),
-              url: (j && j.html_url) || null,
-              notes: (j && typeof j.body === 'string' ? j.body : '').slice(0, 600),
+        try {
+          const res = await fetch('https://api.github.com/repos/' + REPO + '/releases/latest', { headers: headers, signal: ctrl.signal })
+          if (res.ok) {
+            const j = await res.json()
+            const tag = j && (j.tag_name || j.name)
+            if (tag) {
+              candidates.push({
+                version: String(tag).replace(/^v/i, ''),
+                url: (j && j.html_url) || null,
+                notes: (j && typeof j.body === 'string' ? j.body : '').slice(0, 600),
+              })
             }
           }
-        }
-        res = await fetch('https://api.github.com/repos/' + REPO + '/tags', { headers: headers, signal: ctrl.signal })
-        if (res.ok) {
-          const arr = await res.json()
-          if (Array.isArray(arr) && arr.length && arr[0] && arr[0].name) {
-            return {
-              version: String(arr[0].name).replace(/^v/i, ''),
-              url: 'https://github.com/' + REPO + '/releases',
-              notes: '',
+        } catch (e) { /* 忽略，下面还有 tags 兜底 */ }
+
+        try {
+          const res2 = await fetch('https://api.github.com/repos/' + REPO + '/tags?per_page=30', { headers: headers, signal: ctrl.signal })
+          if (res2.ok) {
+            const arr = await res2.json()
+            let best = ''
+            if (Array.isArray(arr)) {
+              for (const it of arr) {
+                const v = String((it && it.name) || '').replace(/^v/i, '')
+                if (!v) continue
+                if (!best || compareVersion(v, best) > 0) best = v
+              }
+            }
+            if (best) {
+              candidates.push({ version: best, url: 'https://github.com/' + REPO + '/releases', notes: '' })
             }
           }
-        }
-        throw new Error('no release info')
+        } catch (e) { /* 忽略 */ }
+
+        if (!candidates.length) throw new Error('no release info')
+        candidates.sort((a, b) => compareVersion(b.version, a.version))
+        return candidates[0]
       } finally {
         clearTimeout(to)
       }

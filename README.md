@@ -189,6 +189,12 @@ dsh plugin --profile web add github:LouieKeung-13/dsh-task-toast
 
 ### Changelog
 
+- **v1.6.2** — fixes version discovery: it only read `releases/latest`, so when a
+  release was never published the API returned the *previous* version and the
+  self-update downgrade guard refused to overwrite — which looked like "update
+  failed even though a newer version exists". It now reads both `releases/latest`
+  and the `tags` list and takes the higher version.
+
 - **v1.6.1** — closes the relapse path where the card breaks again right after an
   update: the repo's `core.autocrlf=true` stores `scripts/*.ps1` as **LF on GitHub**,
   and self-update writes the downloaded bytes straight to disk — so **every update
