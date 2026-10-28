@@ -29,6 +29,9 @@
   为主按钮着色。
 - **广泛的完成事件覆盖** —— 子代理结束、后台任务完成、工作流子任务结束、
   以及顶层会话 `running → idle` 切换。
+- **跨应用置顶** —— 在 dsh **桌面客户端**（Electron）里运行时，通知一出现就把
+  窗口抬到**所有其他应用之上**，到点自动恢复。实现方式是 PowerShell 调用
+  `SetWindowPos(HWND_TOPMOST)`，因此浮层仍是毛玻璃样式，不用退化成系统通知。
 - **内置更新提醒** —— Host 在启动 8 秒后及此后每 6 小时查询上游 GitHub Release
   （可开关）。发现新版本时弹出带「更新」按钮的通知；设置页提供
   **立即检查 / 复制更新命令 / 一键更新**（由 Host 代跑 `dsh plugin remove` + `add`），
@@ -59,8 +62,32 @@ dsh 插件遵循 **Host + Client（宿主 + 客户端）** 分离结构。本插
 
 | 半体 | 文件（源码 → 产物） | 运行时 | 职责 |
 | --- | --- | --- | --- |
-| Host | `src/static/host.js` → `lib/index.js` | Node | 事件订阅、入队、HTTP 通道（`state` / `config` / `poll` / `test` / `active` / `version` / `check-update` / `update`）、上游版本轮询。 |
+| Host | `src/static/host.js` → `lib/index.js` | Node | 事件订阅、入队、HTTP 通道（`state` / `config` / `poll` / `test` / `active` / `version` / `check-update` / `update` / `topmost`）、上游版本轮询、窗口置顶。 |
 | Client | `src/static/client.js` → `lib/client.js` | WebView | 长轮询消费、浮层 UI、设置面板、更新面板。通过 `window.__ModuleLoader__` 注入。 |
+
+### 置顶是怎么做到的（以及做不到什么）
+
+dsh 有两种形态：**Electron 桌面客户端**（`D:\...\DeepSeek Harness.exe`，Electron 44）
+和纯 **web / CLI** 模式。插件代码本身跑在 *Node 模式* 子进程里
+（`ELECTRON_RUN_AS_NODE=1`），**拿不到 `BrowserWindow`** —— 所以插件无法自己
+创建原生窗口。它能做的是改变**已经存在的 dsh 窗口**的层级：
+
+```
+通知到达 ──► Host (Node) ──► powershell -File scripts/topmost.ps1
+                               └─ EnumWindows → 按 process.ppid 匹配 Electron 主进程
+                                  └─ SetWindowPos(hwnd, HWND_TOPMOST, …)
+                                      └─ N 毫秒后用 HWND_NOTOPMOST 还原
+```
+
+- 置顶**不抢焦点**（`SWP_NOACTIVATE`），你可以继续在别的应用里打字，浮层压在最上面。
+- 浮层关掉时立即还原；否则到设定的保持时长后自动还原。
+- 作为桌面客户端运行时，`process.ppid` 就是 Electron 主进程。若按 PID 找不到窗口，
+  会自动按窗口标题兜底匹配（`matchTitle`，默认 `DeepSeek`）；再找不到就静默跳过，
+  web / CLI 模式完全不受影响。
+- **仅 Windows**（通过 PowerShell 调 `user32.dll`）。macOS / Linux 上该开关不生效。
+
+> 因为抬上来的是 **dsh 窗口本体**，你看到的是整个 dsh 窗口浮到最上层，而不是脱离
+> 窗口的独立小卡片。这是「保留毛玻璃浮层」而非「退化成系统通知」的代价。
 
 `package.json` 同时声明了 `dsh.bundle.patch`（经 `cordis.patch.yml` 注册 Host）
 **和** `dsh.client`（Web 客户端 bundle 及其注入包）——后者正是让 dsh 正确注册
@@ -131,6 +158,9 @@ dsh plugin --profile web add github:LouieKeung-13/dsh-task-toast
 
 ### 版本记录
 
+- **v1.4.0** —— 跨应用置顶：浮层显示期间把 dsh 桌面窗口抬到所有应用最上层
+  （经 PowerShell 调 `SetWindowPos` + `HWND_TOPMOST`，不抢焦点），结束后自动还原。
+  设置页新增开关、保持时长、**测试置顶** 按钮。
 - **v1.3.0** —— 更新检查（启动 + 每 6 小时）、`update` 通知分类、
   「版本与更新」设置面板、Host 侧一键更新。同时修复了一个潜在缺陷：Host 端
   生成通知标题时会抛 `config is not defined`，导致所有 Host 侧通知静默失效。
@@ -161,7 +191,7 @@ dsh plugin --profile web add github:LouieKeung-13/dsh-task-toast
    若看到 `长轮询失败（Host 可能未加载/未重启）`，说明 Host HTTP 路由无响应。
 4. **查看 dsh 进程日志 / 终端** 是否有：
    - `[dsh-task-toast] host apply() 开始执行…` → Host 插件已加载。
-   - `[dsh-task-toast] host 已挂载：8 条 HTTP 路由…` → 路由已注册（正常）。
+   - `[dsh-task-toast] host 已挂载：9 条 HTTP 路由…` → 路由已注册（正常）。
    - `[dsh-task-toast] FATAL: ctx.webServer 不可用…` → 你的 dsh 版本未提供
      `webServer`，插件无法提供 HTTP（需要改代码适配）。
 5. **测试按钮在 Host 不可达时会本地兜底弹窗**，所以出现「测试通知（本地预览）」
@@ -186,6 +216,9 @@ dsh plugin --profile web add github:LouieKeung-13/dsh-task-toast
 | 自动消失（秒） | 0 = 不自动关闭；否则 N 秒后自动消失。 |
 | 任务完成 / 错误 级别 | `关闭` / `应用内提示`（任务默认）/ `系统通知`。 |
 | 插件更新提醒 | 内置更新通知的级别（默认「应用内提示」）。 |
+| 浮在所有应用之上（置顶） | 通知出现时把 dsh 桌面窗口抬到所有应用之上（桌面客户端 + Windows）。 |
+| 置顶保持（秒） | 保持置顶的时长；0 = 跟随浮层存活时长 + 1.5 秒。 |
+| 测试置顶 | 置顶 3 秒后自动恢复，用于验证该能力是否可用。 |
 | 发送测试通知 | 推送一条示例通知以验证链路。 |
 | 自动检查更新 | 启动时及此后每 6 小时查询上游 Release。 |
 | 立即检查 | 立刻查一次上游，并显示当前版本 / 最新版本。 |

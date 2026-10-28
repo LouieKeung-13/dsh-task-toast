@@ -31,6 +31,11 @@ configurable from a settings panel.
   primary action with dsh's own `--dsw-alias-brand-primary`.
 - **Broad completion coverage** — sub-agent end, background job done, workflow
   child-agent end, and top-level session `running → idle` transitions.
+- **Always on top (cross-application)** — when running inside the dsh **desktop
+  client** (Electron), the window is raised above **every other application** the
+  moment a notification arrives, then restored automatically. Implemented with
+  `SetWindowPos(HWND_TOPMOST)` via a tiny PowerShell helper, so the overlay keeps
+  its glassmorphism styling instead of degrading to a system notification.
 - **Built-in update checker** — the Host polls the upstream GitHub release on
   startup and every 6 hours. When a newer version exists, a toast with an
   **Update** button appears, and Settings → Task notifications offers
@@ -63,8 +68,37 @@ dsh plugins follow a **Host + Client** split. This plugin is shipped as a
 
 | Half | File (source → artifact) | Runtime | Responsibility |
 | --- | --- | --- | --- |
-| Host | `src/static/host.js` → `lib/index.js` | Node | Event subscription, queueing, HTTP channel (`state` / `config` / `poll` / `test` / `active` / `version` / `check-update` / `update`), upstream release polling. |
+| Host | `src/static/host.js` → `lib/index.js` | Node | Event subscription, queueing, HTTP channel (`state` / `config` / `poll` / `test` / `active` / `version` / `check-update` / `update` / `topmost`), upstream release polling, window elevation. |
 | Client | `src/static/client.js` → `lib/client.js` | WebView | Long-poll consumer, overlay UI, settings panel, update panel. Injected via `window.__ModuleLoader__`. |
+
+### Always on top: how it works (and what it cannot do)
+
+dsh ships in two shapes: an **Electron desktop client**
+(`D:\...\DeepSeek Harness.exe`, Electron 44) and a plain **web/CLI** mode. Plugin
+code itself runs in a *Node-mode* child process (`ELECTRON_RUN_AS_NODE=1`), which
+does **not** have `BrowserWindow` — so a plugin cannot create its own native
+window. What it *can* do is change the z-order of the already-existing dsh window:
+
+```
+notification ──► Host (Node) ──► powershell -File scripts/topmost.ps1
+                                   └─ EnumWindows → match by process.ppid (Electron main)
+                                      └─ SetWindowPos(hwnd, HWND_TOPMOST, …)
+                                          └─ restore with HWND_NOTOPMOST after N ms
+```
+
+- The window is raised **without stealing focus** (`SWP_NOACTIVATE`), so you can
+  keep typing in another app while the toast is visible on top.
+- It is restored when the toast is dismissed, or after the configured hold time.
+- `process.ppid` is the Electron main process when running as the desktop client.
+  If no window matches, the helper falls back to a window-title match
+  (`matchTitle`, default `DeepSeek`), and if that fails too the whole thing is
+  silently skipped — so web/CLI mode is unaffected.
+- **Windows only** (uses `user32.dll` via PowerShell). On macOS/Linux the toggle
+  is inert.
+
+> Because the *dsh window itself* is raised, you will see the whole dsh window on
+> top — not a floating mini-card detached from it. That is the trade-off for
+> keeping the frosted-glass overlay instead of a plain OS notification.
 
 `package.json` declares both `dsh.bundle.patch` (host registration via
 `cordis.patch.yml`) **and** `dsh.client` (the Web client bundle + injected
@@ -142,6 +176,10 @@ dsh plugin --profile web add github:LouieKeung-13/dsh-task-toast
 
 ### Changelog
 
+- **v1.4.0** — always-on-top: while a toast is visible, the dsh desktop window is
+  raised above every other app (`SetWindowPos` + `HWND_TOPMOST` through a
+  PowerShell helper, no focus stealing) and restored afterwards. Settings gained
+  a toggle, a hold-time field and a **Test topmost** button.
 - **v1.3.0** — update checker (startup + every 6 h), `update` notification
   category, Version & updates settings panel, one-click update via the Host.
   Also fixes a latent bug where host-generated notification titles threw
@@ -183,7 +221,7 @@ This almost always means the **Host half is not mounted**, even though the Clien
    HTTP routes are not responding.
 4. **Check the dsh process log / terminal** for:
    - `[dsh-task-toast] host apply() 开始执行…` → Host plugin loaded.
-   - `[dsh-task-toast] host 已挂载：8 条 HTTP 路由…` → routes registered (good).
+   - `[dsh-task-toast] host 已挂载：9 条 HTTP 路由…` → routes registered (good).
    - `[dsh-task-toast] FATAL: ctx.webServer 不可用…` → your dsh version does not
      expose `webServer`; the plugin cannot serve HTTP (a code change is needed).
 5. **The test button falls back to a local preview** if the Host is unreachable,
@@ -210,6 +248,9 @@ This almost always means the **Host half is not mounted**, even though the Clien
 | Auto-dismiss (seconds) | 0 = never auto-close; otherwise the toast closes after N seconds. |
 | Task completed / Error level | `off` / `In-app toast` (default for task) / `System notification`. |
 | Plugin update alerts | Level for the built-in update notification (`In-app toast` by default). |
+| Float above all apps | Raise the dsh desktop window above every other app while a toast is visible (desktop client, Windows). |
+| Hold for (seconds) | How long the window stays on top; 0 = toast lifetime + 1.5 s. |
+| Test topmost | Raises the window for 3 seconds and restores it, to verify the feature. |
 | Send test notification | Pushes a sample toast to verify the pipeline. |
 | Check automatically | Poll the upstream release on startup and every 6 hours. |
 | Check now | Force an immediate update check and show installed vs. latest. |

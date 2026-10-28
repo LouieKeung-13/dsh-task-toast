@@ -29,14 +29,25 @@ globalThis.fetch = async (url) => {
 }
 
 // ---------- fake req / res ----------
-function makeReq(method, url) {
+function makeReq(method, url, body) {
   const h = {}
-  return {
+  const req = {
     method: method,
     url: url,
-    on(ev, fn) { h[ev] = fn; return this },
+    on(ev, fn) {
+      h[ev] = fn
+      // 模拟 Node 请求体：注册 end 监听后异步 deliver（供 readJson 使用）
+      if (ev === 'end') {
+        setTimeout(() => {
+          if (body && h['data']) h['data'](body)
+          fn()
+        }, 0)
+      }
+      return req
+    },
     destroy() {},
   }
+  return req
 }
 function makeRes() {
   const r = { code: 0, headers: null, body: null, done: false }
@@ -104,16 +115,28 @@ const expected = [
   '/dsh-task-toast/version',
   '/dsh-task-toast/check-update',
   '/dsh-task-toast/update',
+  '/dsh-task-toast/topmost',
 ]
 for (const p of expected) assert.ok(ctx.routes[p], '缺少路由 ' + p)
 console.log('✓ 路由注册完整（' + expected.length + ' 条）')
 
+// 测试期间关闭置顶：避免自动检查推送通知时真的把用户窗口抬起来
+const reqCfg = makeReq('POST', '/dsh-task-toast/config', JSON.stringify({ config: { topmost: { enabled: false } } }))
+const resCfg = makeRes()
+await ctx.routes['/dsh-task-toast/config'].handler(reqCfg, resCfg)
+assert.equal(JSON.parse(resCfg._r.body).config.topmost.enabled, false, '测试前置：置顶应已关闭')
+
 // ================= 2) 本地版本 =================
+const PKG_VERSION = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version
 const v0 = await callRoute(ctx.routes, '/dsh-task-toast/version', 'GET')
-assert.equal(v0.local, '1.3.0', '本地版本应为 package.json 的 1.3.0，实际 ' + v0.local)
+assert.equal(v0.local, PKG_VERSION, '本地版本应等于 package.json 的 ' + PKG_VERSION + '，实际 ' + v0.local)
 assert.equal(v0.hasUpdate, false)
 assert.match(v0.updateCmd, /dsh plugin --profile web remove dsh-task-toast/)
 assert.match(v0.updateCmd, /dsh plugin --profile web add github:LouieKeung-13\/dsh-task-toast/)
+assert.equal(v0.profile, 'web', '测试环境不在 profiles/<name>/ 下，profile 应回落为 web')
+const { buildUpdateCommand } = await import(pathToFileURL(join(root, 'lib/config.js')).href)
+assert.match(buildUpdateCommand('desktop'), /--profile desktop remove/, '更新命令应跟随 profile 参数')
+console.log('✓ 更新命令跟随 profile（自动识别 / 可覆盖）')
 console.log('✓ /version 返回本地版本 v' + v0.local + ' 与更新命令')
 
 // ================= 3) 上游更高 → hasUpdate + 推送通知 =================
@@ -184,8 +207,21 @@ if (hasDsh) {
   console.log('✓ /update 无 dsh CLI 时优雅失败并返回日志（removeCode=' + up.removeCode + ', addCode=' + up.addCode + '）')
 }
 
-// ================= 6) dispose 清理 =================
-for (const d of ctx.disposers) { try { d() } catch (e) { /* ignore */ } }
+// ================= 6) 置顶配置与路由（不触发真实窗口操作） =================
+const { normalizeConfig, DEFAULT_CONFIG } = await import(pathToFileURL(join(root, 'lib/config.js')).href)
+assert.deepEqual(normalizeConfig({}).topmost, DEFAULT_CONFIG.topmost, 'topmost 默认值应被补齐')
+assert.equal(normalizeConfig({ topmost: { enabled: false } }).topmost.enabled, false)
+assert.equal(normalizeConfig({ topmost: { durationMs: 999999 } }).topmost.durationMs, 120000, 'durationMs 应被 clamp 到 120s')
+assert.equal(normalizeConfig({ topmost: { durationMs: -5 } }).topmost.durationMs, 0)
+// 用 action=restore 调用（不触发真实窗口置顶，避免影响正在使用的桌面）
+const reqT = makeReq('POST', '/dsh-task-toast/topmost', JSON.stringify({ action: 'restore' }))
+const resT = makeRes()
+await ctx.routes['/dsh-task-toast/topmost'].handler(reqT, resT)
+const r0 = JSON.parse(resT._r.body)
+assert.equal(r0.ok, true)
+console.log('✓ 置顶配置归一化正确，/topmost 路由可用')
+
+// ================= 7) dispose 清理 =================for (const d of ctx.disposers) { try { d() } catch (e) { /* ignore */ } }
 console.log('✓ dispose 正常')
 
 // ================= 7) 中英文案 key 必须一一对应 =================

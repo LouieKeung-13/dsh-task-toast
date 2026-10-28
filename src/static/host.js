@@ -10,6 +10,8 @@
 // 构建：scripts/build-static.mjs 把本文件发布为 lib/index.js（原样复制）。
 import { createRequire } from 'node:module'
 import { spawn } from 'node:child_process'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import {
   CATEGORY_KEYS,
   DEFAULT_CONFIG,
@@ -20,6 +22,23 @@ import {
   compareVersion,
   normalizeConfig,
 } from './config.js'
+
+// 置顶脚本位置：lib/index.js → 插件根 → scripts/topmost.ps1
+let TOPMOST_SCRIPT = ''
+try {
+  TOPMOST_SCRIPT = join(dirname(fileURLToPath(import.meta.url)), '..', 'scripts', 'topmost.ps1')
+} catch (e) { /* 无法解析时置顶功能自动跳过 */ }
+
+// 从自身安装路径推断 dsh profile：
+//   ~/.dsh/profiles/<name>/node_modules/dsh-task-toast/lib/index.js → <name>
+// 桌面客户端用 desktop，CLI/网页面板用 web —— 更新命令必须打到正确的 profile，
+// 否则会出现「更新成功但当前窗口没变化」。
+let DETECTED_PROFILE = ''
+try {
+  const self = fileURLToPath(import.meta.url).replace(/\\/g, '/')
+  const m = self.match(/\/profiles\/([^/]+)\//)
+  if (m && m[1]) DETECTED_PROFILE = m[1]
+} catch (e) { /* ignore */ }
 
 // 本地版本：优先读真实 package.json（lib/index.js 的上级目录），失败回落常驻常量。
 let LOCAL_VERSION = FALLBACK_VERSION
@@ -84,7 +103,14 @@ export default {
       checking: false,
       error: null,
     }
-    const updateCmd = buildUpdateCommand()
+    /** 更新命令作用的 profile：显式配置优先，否则用安装路径推断值，最后回落 web。 */
+    function resolveProfile() {
+      const explicit = config.profile && String(config.profile).trim()
+      return explicit || DETECTED_PROFILE || 'web'
+    }
+    function currentUpdateCmd() {
+      return buildUpdateCommand(resolveProfile())
+    }
 
     /** 拉取上游最新版本：优先 releases/latest，失败回落 tags 列表。 */
     async function fetchLatest() {
@@ -162,9 +188,99 @@ export default {
       } catch (e) { /* ignore */ }
     }
 
-    /** 执行一条 shell 命令，返回 { code, out, err }（带 3 分钟超时，防止安装卡死）。 */
-    function runShell(command) {
+    // ---------- 置顶：把 dsh 客户端窗口抬到「所有应用之上」 ----------
+    let topmostActive = false
+    let topmostTimer = null
+
+    function topmostSupported() {
+      return process.platform === 'win32' && !!TOPMOST_SCRIPT
+    }
+
+    /**
+     * 调用 scripts/topmost.ps1 执行置顶 / 恢复。
+     * ProcessId 用 process.ppid（Electron 主进程），找不到窗口时脚本会按标题兜底匹配。
+     */
+    function runTopmost(action, durationMs) {
       return new Promise((resolve) => {
+        if (!topmostSupported()) { resolve({ ok: false, error: 'unsupported-platform' }); return }
+        const cfg = config.topmost || {}
+        const args = [
+          '-NoProfile', '-ExecutionPolicy', 'Bypass',
+          '-File', TOPMOST_SCRIPT,
+          '-ProcessId', String(process.ppid || 0),
+          '-Action', action,
+          '-TitleContains', String(cfg.matchTitle || ''),
+        ]
+        if (typeof durationMs === 'number' && durationMs > 0) args.push('-Duration', String(durationMs))
+        try {
+          const child = spawn('powershell', args, { windowsHide: true })
+          let out = ''
+          let done = false
+          let timer = null
+          const finish = (r) => {
+            if (done) return
+            done = true
+            if (timer) clearTimeout(timer)
+            resolve(r)
+          }
+          timer = setTimeout(() => {
+            try { child.kill('SIGKILL') } catch (e) { /* ignore */ }
+            finish({ ok: false, error: 'timeout' })
+          }, 15000)
+          child.stdout.on('data', (d) => { out += String(d) })
+          child.stderr.on('data', () => { /* ignore */ })
+          child.on('error', (e) => finish({ ok: false, error: String((e && e.message) || e) }))
+          child.on('close', () => {
+            try {
+              const line = out.trim().split(/\r?\n/).filter(Boolean).pop() || ''
+              finish(JSON.parse(line))
+            } catch (e) {
+              finish({ ok: false, error: 'bad-output', raw: out.slice(-200) })
+            }
+          })
+        } catch (e) {
+          resolve({ ok: false, error: String((e && e.message) || e) })
+        }
+      })
+    }
+
+    /** 通知出现时：抬到最上层，并在时长结束后自动恢复。 */
+    function holdTopmost() {
+      const cfg = config.topmost || {}
+      if (!cfg.enabled || !topmostSupported() || disposed) return
+      const dur = cfg.durationMs > 0 ? cfg.durationMs : (config.autoDismissMs || 10000) + 1500
+      if (!topmostActive) {
+        topmostActive = true
+        runTopmost('topmost').then((r) => {
+          if (!r || !r.ok) {
+            topmostActive = false
+            console.warn('[dsh-task-toast] 置顶未生效（多为非桌面客户端或窗口未找到）：' + JSON.stringify(r))
+          } else {
+            console.log('[dsh-task-toast] 已置顶 dsh 窗口 ' + JSON.stringify((r.handles || []).map(String)) + '，' + dur + 'ms 后恢复')
+          }
+        }).catch(() => { topmostActive = false })
+      }
+      if (topmostTimer) {
+        try { if (typeof topmostTimer === 'function') topmostTimer(); else clearTimeout(topmostTimer) } catch (e) { /* ignore */ }
+      }
+      if (ctx.timer && typeof ctx.timer.timeout === 'function') {
+        topmostTimer = ctx.timer.timeout(() => { topmostTimer = null; releaseTopmost() }, dur)
+      }
+    }
+
+    /** 立即恢复窗口层级（用户在浮层上点了按钮时提前调用）。 */
+    function releaseTopmost() {
+      if (!topmostActive) return
+      topmostActive = false
+      if (topmostTimer) {
+        try { if (typeof topmostTimer === 'function') topmostTimer(); else clearTimeout(topmostTimer) } catch (e) { /* ignore */ }
+        topmostTimer = null
+      }
+      runTopmost('restore').catch(() => { /* ignore */ })
+    }
+
+    /** 执行一条 shell 命令，返回 { code, out, err }（带 3 分钟超时，防止安装卡死）。 */
+    function runShell(command) {      return new Promise((resolve) => {
         try {
           const child = spawn(command, { shell: true, windowsHide: true })
           let out = ''
@@ -190,15 +306,18 @@ export default {
       })
     }
 
-    /** 一键更新：remove → add，返回合并日志。 */
+    /** 一键更新：remove → add（作用于当前插件实际所在的 profile），返回合并日志。 */
     async function performUpdate() {
+      const profile = resolveProfile()
+      const removeCmd = 'dsh plugin --profile ' + profile + ' remove dsh-task-toast'
+      const addCmd = 'dsh plugin --profile ' + profile + ' add ' + INSTALL_SOURCE
       const steps = []
-      const remove = await runShell('dsh plugin --profile web remove dsh-task-toast')
-      steps.push('$ dsh plugin --profile web remove dsh-task-toast\n' + (remove.out || '') + (remove.err || ''))
-      const add = await runShell('dsh plugin --profile web add ' + INSTALL_SOURCE)
-      steps.push('$ dsh plugin --profile web add ' + INSTALL_SOURCE + '\n' + (add.out || '') + (add.err || ''))
+      const remove = await runShell(removeCmd)
+      steps.push('$ ' + removeCmd + '\n' + (remove.out || '') + (remove.err || ''))
+      const add = await runShell(addCmd)
+      steps.push('$ ' + addCmd + '\n' + (add.out || '') + (add.err || ''))
       const ok = remove.code === 0 && add.code === 0
-      return { ok: ok, log: steps.join('\n\n'), removeCode: remove.code, addCode: add.code }
+      return { ok: ok, log: steps.join('\n\n'), removeCode: remove.code, addCode: add.code, profile: profile }
     }
 
     // ---------- HTTP 辅助 ----------
@@ -236,6 +355,7 @@ export default {
       }
       queue.push(item)
       if (queue.length > MAX_QUEUE) queue.shift()
+      holdTopmost()
       while (waiters.length) {
         const w = waiters.shift()
         try { if (w.dispose) w.dispose() } catch (e) { /* ignore */ }
@@ -331,6 +451,7 @@ export default {
           }
           queue.push(item)
           if (queue.length > MAX_QUEUE) queue.shift()
+          holdTopmost()
           while (waiters.length) {
             const w = waiters.shift()
             try { if (w.dispose) w.dispose() } catch (e) { /* ignore */ }
@@ -383,7 +504,7 @@ export default {
         path: '/dsh-task-toast/version',
         handler: (req, res) => {
           if (req.method !== 'GET') { sendJson(res, 405, { ok: false }); return }
-          sendJson(res, 200, Object.assign({ ok: true, updateCmd: updateCmd, repo: REPO }, updateState))
+          sendJson(res, 200, Object.assign({ ok: true, updateCmd: currentUpdateCmd(), profile: resolveProfile(), repo: REPO }, updateState))
         },
       })
 
@@ -393,7 +514,7 @@ export default {
         handler: async (req, res) => {
           if (req.method !== 'POST') { sendJson(res, 405, { ok: false }); return }
           const st = await checkUpdate(true)
-          sendJson(res, 200, Object.assign({ ok: true, updateCmd: updateCmd, repo: REPO }, st))
+          sendJson(res, 200, Object.assign({ ok: true, updateCmd: currentUpdateCmd(), profile: resolveProfile(), repo: REPO }, st))
         },
       })
 
@@ -409,7 +530,30 @@ export default {
         },
       })
 
-      console.log('[dsh-task-toast] host 已挂载：8 条 HTTP 路由（/dsh-task-toast/{state,config,active,test,poll,version,check-update,update}）注册完成。')
+      safeRegister('/topmost', {
+        kind: 'exact',
+        path: '/dsh-task-toast/topmost',
+        handler: async (req, res) => {
+          if (req.method !== 'POST') { sendJson(res, 405, { ok: false }); return }
+          const body = await readJson(req)
+          const action = body && body.action === 'restore' ? 'restore' : body && body.action === 'probe' ? 'probe' : 'hold'
+          if (action === 'restore') {
+            releaseTopmost()
+            sendJson(res, 200, { ok: true, action: 'restore' })
+            return
+          }
+          if (action === 'probe') {
+            // 探针：置顶 3 秒后由脚本自行恢复，用于设置页「测试置顶」
+            const rp = await runTopmost('topmost', 3000)
+            sendJson(res, 200, Object.assign({ action: 'probe' }, rp))
+            return
+          }
+          const r = await runTopmost('topmost')
+          sendJson(res, 200, Object.assign({ action: action }, r))
+        },
+      })
+
+      console.log('[dsh-task-toast] host 已挂载：9 条 HTTP 路由（/dsh-task-toast/{state,config,active,test,poll,version,check-update,update,topmost}）注册完成。')
     }
 
     // ---------- 启动更新检查调度（延迟 8s 首检，避免拖慢 dsh 启动） ----------
@@ -487,6 +631,7 @@ export default {
     ctx.effect(() => {
       return () => {
         disposed = true
+        releaseTopmost()
         if (updateTimerHandle) {
           try { if (typeof updateTimerHandle === 'function') updateTimerHandle(); else clearTimeout(updateTimerHandle) } catch (e) { /* ignore */ }
           updateTimerHandle = null

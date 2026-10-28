@@ -31,6 +31,7 @@ const api = {
   version: () => fetchJson('/version'),
   checkUpdate: () => fetchJson('/check-update', { method: 'POST' }),
   update: () => fetchJson('/update', { method: 'POST' }),
+  topmost: (action) => fetchJson('/topmost', { method: 'POST', body: JSON.stringify({ action: action }) }),
 }
 
 // 本地兜底用的更新命令（Host 不可达时「复制更新命令」仍可用）。
@@ -82,6 +83,14 @@ function ui(locale) {
     releasePage: '发布页',
     updateBtn: '更新',
     hostNeeded: '更新功能需要 Host 已连接（若未连接请彻底重启 dsh）',
+    // ---- 置顶 ----
+    topmost: '浮在所有应用之上（置顶）',
+    topmostHint: '通知出现时把 dsh 窗口抬到最上层，结束后自动恢复。仅 dsh 桌面客户端支持；网页/CLI 模式下自动跳过。',
+    topmostDuration: '置顶保持（秒）',
+    topmostTest: '测试置顶',
+    topmostOk: '已置顶，3 秒后自动恢复',
+    topmostFail: '置顶未生效（非桌面客户端，或未找到 dsh 窗口）',
+    topmostCancel: '已取消置顶',
   }
   const en = {
     settingsTitle: 'Task notifications',
@@ -127,6 +136,14 @@ function ui(locale) {
     releasePage: 'Release page',
     updateBtn: 'Update',
     hostNeeded: 'Update requires the Host process (restart dsh if it is not connected)',
+    // ---- Topmost ----
+    topmost: 'Float above all apps (always on top)',
+    topmostHint: 'Raises the dsh window above every other app when a notification arrives, then restores it. Desktop client only; silently skipped in web/CLI mode.',
+    topmostDuration: 'Hold for (seconds)',
+    topmostTest: 'Test topmost',
+    topmostOk: 'Raised on top — restores in 3s',
+    topmostFail: 'Topmost did not apply (not the desktop client, or window not found)',
+    topmostCancel: 'Topmost released',
   }
   return locale === 'en' ? en : zh
 }
@@ -288,6 +305,8 @@ const apply = async (ctx) => {
     const tm = snoozeTimers.get(id)
     if (tm) { try { clearTimeout(tm) } catch (e) { /* ignore */ } snoozeTimers.delete(id) }
     emitter.emit()
+    // 所有浮层都关掉后，立即把 dsh 窗口层级还原（不必等置顶定时器到期）
+    if (!state.toasts.length) api.topmost('restore').catch(() => { /* ignore */ })
   }
 
   function snoozeToast(toast) {
@@ -493,6 +512,7 @@ const apply = async (ctx) => {
       if (patch.onlyOtherSessions !== undefined) next.onlyOtherSessions = patch.onlyOtherSessions
       if (patch.autoDismissMs !== undefined) next.autoDismissMs = patch.autoDismissMs
       if (patch.checkUpdate !== undefined) next.checkUpdate = patch.checkUpdate
+      if (patch.topmost) next.topmost = Object.assign({}, cfg.topmost, patch.topmost)
       if (patch.category) next.categories[patch.category] = patch.level
       state.config = next
       setCfg(next)
@@ -504,6 +524,17 @@ const apply = async (ctx) => {
     const [updChecking, setUpdChecking] = React.useState(false)
     const [updRunning, setUpdRunning] = React.useState(false)
     const [updLog, setUpdLog] = React.useState('')
+    const [topmostMsg, setTopmostMsg] = React.useState('')
+
+    function doTopmostProbe() {
+      setTopmostMsg(cfg.locale === 'en' ? 'Raising…' : '正在置顶…')
+      api.topmost('probe').then((r) => {
+        const ok = r && r.ok && (r.windows || 0) > 0
+        setTopmostMsg(ok ? t.topmostOk : t.topmostFail + (r && r.error ? ' · ' + r.error : ''))
+      }).catch((err) => {
+        setTopmostMsg(t.topmostFail + ' · ' + ((err && err.message) || String(err)))
+      })
+    }
 
     React.useEffect(() => {
       if (state.updateInfo) { setUpd(state.updateInfo); return }
@@ -626,6 +657,19 @@ const apply = async (ctx) => {
         ' ' + t.followAccent
       ),
       selectRow(t.position, null, React.createElement('select', { className: 'dsh-tt-select', value: cfg.position, onChange: (e) => update({ position: e.target.value }) }, posOpts)),
+
+      // ---------- 置顶（跨应用最上层） ----------
+      React.createElement('label', { className: 'dsh-tt-check' },
+        React.createElement('input', { type: 'checkbox', checked: !!(cfg.topmost && cfg.topmost.enabled), onChange: (e) => update({ topmost: { enabled: e.target.checked } }) }),
+        ' ' + t.topmost
+      ),
+      React.createElement('p', { className: 'dsh-tt-hint' }, t.topmostHint),
+      selectRow(t.topmostDuration, null, React.createElement('input', {
+        className: 'dsh-tt-input', type: 'number', min: '0', max: '120', step: '1', style: { width: '90px' },
+        value: String(Math.round((((cfg.topmost || {}).durationMs) || 0) / 1000)),
+        onChange: (e) => { const v = parseInt(e.target.value, 10); update({ topmost: { durationMs: (isNaN(v) ? 0 : v) * 1000 } }) },
+      })),
+
       selectRow(t.viewBehavior, null, React.createElement('select', { className: 'dsh-tt-select', value: cfg.viewBehavior, onChange: (e) => update({ viewBehavior: e.target.value }) }, vbOpts)),
       selectRow(t.taskLevel, null, React.createElement('select', { className: 'dsh-tt-select', value: cfg.categories.task, onChange: (e) => update({ category: 'task', level: e.target.value }) }, levelOpts)),
       selectRow(t.errorLevel, null, React.createElement('select', { className: 'dsh-tt-select', value: cfg.categories.error, onChange: (e) => update({ category: 'error', level: e.target.value }) }, levelOpts)),
@@ -640,8 +684,10 @@ const apply = async (ctx) => {
       ),
       selectRow(t.autoDismiss, null, React.createElement('input', { className: 'dsh-tt-input', type: 'number', min: '0', step: '1', value: String(cfg.autoDismissMs), style: { width: '90px' }, onChange: (e) => { const v = parseInt(e.target.value, 10); update({ autoDismissMs: isNaN(v) ? 0 : v }) } })),
       React.createElement('div', { className: 'dsh-tt-actions-row' },
-        React.createElement('button', { className: 'dsh-tt-btn-lg', onClick: () => { sendTest() } }, t.testBtn)
+        React.createElement('button', { className: 'dsh-tt-btn-lg', onClick: () => { sendTest() } }, t.testBtn),
+        React.createElement('button', { className: 'dsh-tt-btn-lg dsh-tt-btn-lg--ghost', onClick: () => doTopmostProbe() }, t.topmostTest)
       ),
+      topmostMsg ? React.createElement('p', { className: 'dsh-tt-hint' }, topmostMsg) : null,
 
       // ---------- 版本与更新 ----------
       React.createElement('h3', { className: 'dsh-tt-section-title', style: { marginTop: '6px' } }, t.versionSection),
@@ -651,6 +697,7 @@ const apply = async (ctx) => {
           React.createElement('div', { className: 'dsh-tt-row-desc' },
             (cfg.locale === 'en' ? 'Latest: ' : '最新版本：') + ((upd && upd.latest) ? 'v' + upd.latest : '—')
             + (upd && upd.checkedAt ? (' · ' + new Date(upd.checkedAt).toLocaleString()) : '')
+            + (upd && upd.profile ? (' · profile: ' + upd.profile) : '')
             + (upd && upd.error ? (' · ' + String(upd.error).slice(0, 60)) : '')
           )
         ),
