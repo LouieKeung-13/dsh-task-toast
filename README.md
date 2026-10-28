@@ -189,6 +189,36 @@ dsh plugin --profile web add github:LouieKeung-13/dsh-task-toast
 
 ### Changelog
 
+- **v1.7.0** — rewrites the standalone card: fixes the overlapping/garbled text
+  and the garbled Chinese button labels, and switches to a plain native-Windows look:
+  - **The text overlap was a DPI bug**: the old code computed the layout in the
+    constructor, before the window handle existed, so `DeviceDpi` was always 96 —
+    while the process is DPI-aware. Fonts therefore rendered ~1.5x larger than the
+    reserved area on a 150% display and the third body line landed on top of the
+    button row. The real DPI is now taken after handle creation (three-way
+    fallback: `GetDpiForWindow` -> `DeviceDpi` -> `Graphics.DpiX`), and fonts use
+    `GraphicsUnit.Pixel` scaled by that factor.
+  - **Card height is now measured from the text** instead of a hardcoded 152px, and
+    the primary button no longer renders white-on-white (it was invisible in the
+    dark theme).
+  - **All the decoration is gone**: no acrylic blur (DWM
+    `SetWindowCompositionAttribute`), no inner highlight, no fade animation, no
+    hand-painted rounded `Region`. What is left is a solid background, a 1px
+    hairline border and system fonts — the native Windows notification look — while
+    DWM corner rounding and dark mode are kept.
+  - **The garbled Chinese buttons were an encoding bug**: `card.ps1` was UTF-8
+    without a BOM, so Windows PowerShell 5.1 decoded it with the system ANSI code
+    page (GBK on Chinese systems) and the CJK string literals inside the embedded
+    C# came out mangled (title and body were fine because they arrive as command
+    line arguments). Now: the labels are passed in by the Host as
+    `-BtnView/-BtnLater/-BtnIgnore` (command lines are Unicode), both `.ps1` files
+    are **pure ASCII**, the build enforces **UTF-8 BOM + CRLF**, and the smoke test
+    asserts all of this so it cannot regress.
+  - The **card trace log block** was removed from the Settings panel; the same
+    diagnostics are still available through the `/version` route.
+  - New layout self-check: `card.ps1 -Snapshot <png>` renders the card to an image
+    and `tests/snapshot-card.mjs` produces zh/en x dark/light snapshots.
+
 - **v1.6.2** — fixes version discovery: it only read `releases/latest`, so when a
   release was never published the API returned the *previous* version and the
   self-update downgrade guard refused to overwrite — which looked like "update
