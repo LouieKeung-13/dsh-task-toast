@@ -189,6 +189,14 @@ dsh plugin --profile web add github:LouieKeung-13/dsh-task-toast
 
 ### Changelog
 
+- **v1.6.1** — closes the relapse path where the card breaks again right after an
+  update: the repo's `core.autocrlf=true` stores `scripts/*.ps1` as **LF on GitHub**,
+  and self-update writes the downloaded bytes straight to disk — so **every update
+  rewrote the card script as LF**, which makes Windows PowerShell 5.1 mis-parse the
+  here-string and exit instantly (symptom identical to v1.5.2: the card silently
+  never shows). Fixed twice over: a `.gitattributes` (`*.ps1 -text`) so the repo
+  stores CRLF, plus a forced CRLF conversion when self-update writes any `.ps1`.
+
 - **v1.6.0** — fixes the real reason the standalone card never appeared, and adds a
   system-notification channel:
   - Root cause: `card.ps1` derived its compile-cache directory from

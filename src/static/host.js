@@ -53,6 +53,14 @@ const SELF_UPDATE_FILES = [
   'scripts/card.ps1',
 ]
 
+// 仓库里存的是 LF（core.autocrlf=true 会在提交时把 CRLF 归一成 LF），
+// 直接落盘会让 Windows PowerShell 5.1 的 here-string 解析错位、脚本秒退 ——
+// 这正是「独立卡片弹不出来」的一个复发通道，所以落盘前一律强制转回 CRLF。
+function toCrlf(buf) {
+  const s = buf.toString('utf8').replace(/\r\n/g, '\n').replace(/\n/g, '\r\n')
+  return Buffer.from(s, 'utf8')
+}
+
 // 从自身安装路径推断 dsh profile：
 //   ~/.dsh/profiles/<name>/node_modules/dsh-task-toast/lib/index.js → <name>
 // 桌面客户端用 desktop，CLI/网页面板用 web —— 更新命令必须打到正确的 profile，
@@ -651,8 +659,10 @@ export default {
         const dest = join(PLUGIN_ROOT, item.rel)
         mkdirSync(dirname(dest), { recursive: true })
         if (existsSync(dest)) copyFileSync(dest, dest + '.bak')
-        writeFileSync(dest, item.buf)
-        lines.push('✓ ' + item.rel + '  ' + item.buf.length + ' B')
+        const isPs1 = /\.ps1$/i.test(item.rel)
+        const out = isPs1 ? toCrlf(item.buf) : item.buf
+        writeFileSync(dest, out)
+        lines.push('✓ ' + item.rel + '  ' + out.length + ' B' + (isPs1 ? '（已转 CRLF）' : ''))
       }
 
       // 同步 package.json 的 version 字段（只改这一个字段，保留 dependencies / dsh 配置），

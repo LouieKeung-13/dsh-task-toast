@@ -170,6 +170,14 @@ dsh plugin --profile web add github:LouieKeung-13/dsh-task-toast
 
 ### 版本记录
 
+- **v1.6.1** —— 堵死「更新一次之后卡片又弹不出来」的复发通道：
+  - 仓库的 `core.autocrlf=true` 会把 `scripts/*.ps1` **以 LF 存进 GitHub**，
+    而自更新是从 GitHub 直接下载文件内容落盘的 —— 也就是说**每次自更新都会把卡片脚本
+    写回 LF**，于是 Windows PowerShell 5.1 的 here-string 解析错位、脚本秒退，
+    症状与 v1.5.2 一模一样（独立卡片静默不显示）。
+  - 双重修复：① 新增 `.gitattributes`（`*.ps1 -text`），仓库里存的就是 CRLF；
+    ② 自更新落盘时对 `.ps1` 强制转 CRLF（不依赖仓库设置，任何来源都兜得住）。
+
 - **v1.6.0** —— 修好「独立置顶小卡片弹不出来」的**真正根因**，并新增系统通知双通道：
   - 根因一：`card.ps1` 取 `$env:LOCALAPPDATA` 推导编译缓存目录，而 dsh 的 Host 是
     Electron 的 Node 子进程，该变量为空 → 缓存目录推导直接抛错 → **每次通知都要

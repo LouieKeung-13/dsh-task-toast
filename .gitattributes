@@ -1,0 +1,4 @@
+# PowerShell 脚本按二进制处理，不做 CRLF/LF 归一化。
+# 原因：Windows PowerShell 5.1 的 here-string（@'...'@）只认 CRLF，
+# 若仓库里存成 LF，自更新下载后脚本会解析错位并秒退（表现为「卡片弹不出来」）。
+*.ps1 -text
