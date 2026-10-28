@@ -31,6 +31,12 @@ configurable from a settings panel.
   primary action with dsh's own `--dsw-alias-brand-primary`.
 - **Broad completion coverage** — sub-agent end, background job done, workflow
   child-agent end, and top-level session `running → idle` transitions.
+- **Built-in update checker** — the Host polls the upstream GitHub release on
+  startup and every 6 hours. When a newer version exists, a toast with an
+  **Update** button appears, and Settings → Task notifications offers
+  **Check now**, **Copy update command** and **One-click update** (runs
+  `dsh plugin remove` + `add` for you), so you never have to uninstall/reinstall
+  by hand again.
 - **Zero source patching** — communicates via a host-exposed HTTP channel and
   renders through dsh's public slots, so it survives dsh upgrades.
 
@@ -57,8 +63,8 @@ dsh plugins follow a **Host + Client** split. This plugin is shipped as a
 
 | Half | File (source → artifact) | Runtime | Responsibility |
 | --- | --- | --- | --- |
-| Host | `src/static/host.js` → `lib/index.js` | Node | Event subscription, queueing, HTTP channel (`state` / `config` / `poll` / `test` / `active`). |
-| Client | `src/static/client.js` → `lib/client.js` | WebView | Long-poll consumer, overlay UI, settings panel. Injected via `window.__ModuleLoader__`. |
+| Host | `src/static/host.js` → `lib/index.js` | Node | Event subscription, queueing, HTTP channel (`state` / `config` / `poll` / `test` / `active` / `version` / `check-update` / `update`), upstream release polling. |
+| Client | `src/static/client.js` → `lib/client.js` | WebView | Long-poll consumer, overlay UI, settings panel, update panel. Injected via `window.__ModuleLoader__`. |
 
 `package.json` declares both `dsh.bundle.patch` (host registration via
 `cordis.patch.yml`) **and** `dsh.client` (the Web client bundle + injected
@@ -86,16 +92,66 @@ Then **fully quit and restart dsh** — a page reload is NOT enough. The Host
 hot-reload, but the HTTP routes that power notifications only come up after a
 full restart.
 
-### Upgrading from v1.0.0
+## Updates
+
+The plugin now tells you when a newer release exists, and can reinstall itself.
+
+**Automatic check** — the Host queries
+`https://api.github.com/repos/LouieKeung-13/dsh-task-toast/releases/latest`
+8 seconds after boot and then every 6 hours (toggleable). If the upstream tag is
+newer than the installed version, a toast appears:
+
+```
+Plugin update available: 1.4.0
+Installed 1.3.0 · latest 1.4.0. Click "Update" to copy the command, or use
+one-click update in Settings (restart dsh afterwards).
+```
+
+- **Update** on that toast copies the update command to your clipboard.
+- **Settings → Task notifications → Version & updates** shows installed vs.
+  latest, the last check time, and three buttons:
+  - **Check now** — forces an immediate upstream check.
+  - **Copy update command** — copies the two-line `remove` + `add` command.
+  - **One-click update** — the Host runs the command for you and streams the
+    CLI output into a log box.
+
+```bash
+# what one-click update runs
+dsh plugin --profile web remove dsh-task-toast
+dsh plugin --profile web add github:LouieKeung-13/dsh-task-toast
+```
+
+> **Restart is still required.** dsh reads the plugin bundle at boot, so even a
+> successful one-click update only takes effect after you fully quit and
+> relaunch dsh. The button saves you the typing, not the restart.
+>
+> If one-click update fails (for example because dsh is not on `PATH`, or the
+> profile directory is locked), copy the command and run it in your own terminal.
+
+### Upgrading from v1.0.0 / v1.1.x / v1.2.0
 
 v1.0.0 reported "this plugin package contains no components" because it lacked
 the `dsh.client` manifest and shipped raw source instead of a built bundle.
-**Re-install or update** to v1.1.1:
+From v1.3.0 onwards you can just use **One-click update** in the settings page;
+manually:
 
 ```bash
 dsh plugin --profile web remove dsh-task-toast
 dsh plugin --profile web add github:LouieKeung-13/dsh-task-toast
 ```
+
+### Changelog
+
+- **v1.3.0** — update checker (startup + every 6 h), `update` notification
+  category, Version & updates settings panel, one-click update via the Host.
+  Also fixes a latent bug where host-generated notification titles threw
+  `config is not defined`, which silently broke every host-side notification.
+- **v1.2.0** — Apple-style glassmorphism, adaptive skin theme, explicit color
+  fallbacks (fixes the blank primary button).
+- **v1.1.1** — Host diagnostics (`host apply()` log, connection status row,
+  local fallback preview for the test button).
+- **v1.1.0** — correct dsh plugin contract (`dsh.client` manifest + built
+  `lib/` bundle).
 
 ### Verify
 
@@ -127,7 +183,7 @@ This almost always means the **Host half is not mounted**, even though the Clien
    HTTP routes are not responding.
 4. **Check the dsh process log / terminal** for:
    - `[dsh-task-toast] host apply() 开始执行…` → Host plugin loaded.
-   - `[dsh-task-toast] host 已挂载：5 条 HTTP 路由…` → routes registered (good).
+   - `[dsh-task-toast] host 已挂载：8 条 HTTP 路由…` → routes registered (good).
    - `[dsh-task-toast] FATAL: ctx.webServer 不可用…` → your dsh version does not
      expose `webServer`; the plugin cannot serve HTTP (a code change is needed).
 5. **The test button falls back to a local preview** if the Host is unreachable,
@@ -153,7 +209,12 @@ This almost always means the **Host half is not mounted**, even though the Clien
 | Only other sessions | Suppress notifications for the session you are currently viewing. |
 | Auto-dismiss (seconds) | 0 = never auto-close; otherwise the toast closes after N seconds. |
 | Task completed / Error level | `off` / `In-app toast` (default for task) / `System notification`. |
+| Plugin update alerts | Level for the built-in update notification (`In-app toast` by default). |
 | Send test notification | Pushes a sample toast to verify the pipeline. |
+| Check automatically | Poll the upstream release on startup and every 6 hours. |
+| Check now | Force an immediate update check and show installed vs. latest. |
+| Copy update command | Copy the two-line `remove` + `add` command to the clipboard. |
+| One-click update | Runs `remove` + `add` on the Host and streams the CLI output. |
 
 > Default UI language is 中文（简体）. The notification title and body are
 > localized on the host side and follow the same language setting.
@@ -164,7 +225,14 @@ This almost always means the **Host half is not mounted**, even though the Clien
 node scripts/build-static.mjs    # -> lib/{config.js, index.js, client.js}
 node scripts/build-dynamic.mjs   # -> dynamic/{host,client}.body.js (cordis_define paste)
 npm run check                   # build both
+npm test                        # build + Host/client smoke test (tests/smoke-update.mjs)
 ```
+
+`npm test` exercises the update pipeline end to end against a mocked GitHub
+API: route registration, local version resolution, newer/older/equal upstream
+versions, the `update` notification push, and client bundle export. It detects
+whether a real `dsh` CLI is installed and, if so, **skips the real
+remove/add** so it can never damage your live install.
 
 - The client half is a CommonJS module wrapped in `window.__ModuleLoader__.load`;
   React is provided by the harness (`require('react')`), so there is **no

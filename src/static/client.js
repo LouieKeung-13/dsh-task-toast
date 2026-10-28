@@ -28,7 +28,13 @@ const api = {
   active: (sessionId) => fetchJson('/active', { method: 'POST', body: JSON.stringify({ sessionId: sessionId }) }),
   test: () => fetchJson('/test', { method: 'POST' }),
   poll: (since) => fetchJson('/poll?since=' + encodeURIComponent(String(since))),
+  version: () => fetchJson('/version'),
+  checkUpdate: () => fetchJson('/check-update', { method: 'POST' }),
+  update: () => fetchJson('/update', { method: 'POST' }),
 }
+
+// 本地兜底用的更新命令（Host 不可达时「复制更新命令」仍可用）。
+const LOCAL_UPDATE_CMD = 'dsh plugin --profile web remove dsh-task-toast\ndsh plugin --profile web add github:' + REPO
 
 // ---------- 多语言 UI 文案 ----------
 function ui(locale) {
@@ -46,6 +52,7 @@ function ui(locale) {
     autoDismiss: '自动消失（秒，0 表示不自动关闭）',
     taskLevel: '任务完成',
     errorLevel: '错误失败',
+    updateLevel: '插件更新提醒',
     levelOff: '关闭',
     levelApp: '应用内提示',
     levelSystem: '系统通知',
@@ -55,6 +62,26 @@ function ui(locale) {
     dismiss: '忽略',
     copied: '已复制',
     copy: '复制结果',
+    // ---- 更新提醒 ----
+    versionSection: '版本与更新',
+    currentVersion: '当前版本',
+    latestVersion: '最新版本',
+    statusLatest: '已是最新版本',
+    statusNew: '发现新版本',
+    statusUnknown: '尚未检查',
+    statusChecking: '检查中…',
+    autoCheck: '自动检查更新（启动时 + 每 6 小时）',
+    checkNow: '立即检查',
+    checking: '检查中…',
+    copyCmd: '复制更新命令',
+    updateNow: '一键更新',
+    updating: '更新中…',
+    cmdCopied: '更新命令已复制，请在终端执行后重启 dsh',
+    updateDone: '更新命令已执行成功，请重启 dsh 生效',
+    updateFailed: '自动更新失败，请复制命令在终端手动执行',
+    releasePage: '发布页',
+    updateBtn: '更新',
+    hostNeeded: '更新功能需要 Host 已连接（若未连接请彻底重启 dsh）',
   }
   const en = {
     settingsTitle: 'Task notifications',
@@ -70,6 +97,7 @@ function ui(locale) {
     autoDismiss: 'Auto-dismiss (seconds, 0 = never)',
     taskLevel: 'Task completed',
     errorLevel: 'Error',
+    updateLevel: 'Plugin update alerts',
     levelOff: 'Off',
     levelApp: 'In-app toast',
     levelSystem: 'System notification',
@@ -79,6 +107,26 @@ function ui(locale) {
     dismiss: 'Dismiss',
     copied: 'Copied',
     copy: 'Copy result',
+    // ---- Update ----
+    versionSection: 'Version & updates',
+    currentVersion: 'Installed',
+    latestVersion: 'Latest',
+    statusLatest: 'Up to date',
+    statusNew: 'Update available',
+    statusUnknown: 'Not checked yet',
+    statusChecking: 'Checking…',
+    autoCheck: 'Check automatically (on start + every 6 h)',
+    checkNow: 'Check now',
+    checking: 'Checking…',
+    copyCmd: 'Copy update command',
+    updateNow: 'One-click update',
+    updating: 'Updating…',
+    cmdCopied: 'Command copied. Run it in a terminal, then restart dsh',
+    updateDone: 'Update finished. Restart dsh to apply',
+    updateFailed: 'Auto-update failed — copy the command and run it manually',
+    releasePage: 'Release page',
+    updateBtn: 'Update',
+    hostNeeded: 'Update requires the Host process (restart dsh if it is not connected)',
   }
   return locale === 'en' ? en : zh
 }
@@ -153,6 +201,7 @@ function injectCss() {
 .dsh-tt-task { border-left: 3px solid #34C759; }
 .dsh-tt-error { border-left: 3px solid #FF453A; }
 .dsh-tt-test { border-left: 3px solid var(--tt-accent); }
+.dsh-tt-update { border-left: 3px solid #FF9F0A; }
 
 .dsh-tt-title { font-weight: 600; font-size: 13.5px; line-height: 1.35; letter-spacing: -0.01em; }
 .dsh-tt-body { font-size: 12.5px; line-height: 1.45; color: rgba(60, 60, 67, 0.7); overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; word-break: break-all; }
@@ -191,6 +240,9 @@ function injectCss() {
 .dsh-tt-actions-row { display: flex; gap: 8px; }
 .dsh-tt-btn-lg { background: #007AFF; color: #fff; border: 1px solid transparent; border-radius: 8px; padding: 6px 14px; font-size: 12.5px; font-weight: 500; cursor: pointer; }
 .dsh-tt-btn-lg:hover { filter: brightness(1.06); }
+.dsh-tt-btn-lg--ghost { background: rgba(120, 120, 128, 0.14); color: var(--text, rgba(28, 28, 30, 0.9)); border-color: rgba(120, 120, 128, 0.28); }
+.dsh-tt-btn-lg:disabled { opacity: 0.5; cursor: default; filter: none; }
+.dsh-tt-log { margin: 0; max-height: 220px; overflow: auto; white-space: pre-wrap; word-break: break-all; padding: 8px 10px; border-radius: 8px; background: rgba(120, 120, 128, 0.1); border: 1px solid rgba(120, 120, 128, 0.2); color: var(--text, rgba(28, 28, 30, 0.88)); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11.5px; line-height: 1.5; }
 `
   document.head.appendChild(tag)
 }
@@ -211,6 +263,9 @@ const apply = async (ctx) => {
     hostError: null,
     failStreak: 0,
     seqLocal: 0,
+    // 更新检查缓存（由 /version 拉取，Host 不可达时回落本地常量）
+    updateInfo: null,
+    updateCmd: LOCAL_UPDATE_CMD,
   }
   const listeners = new Set()
   const emitter = {
@@ -269,6 +324,23 @@ const apply = async (ctx) => {
     }
   }
 
+  /** 轻量反馈提示（用于「已复制更新命令」等一次性回执）。 */
+  function flash(title, body) {
+    state.seqLocal -= 1
+    addToast({ seq: state.seqLocal, category: 'update', sessionId: null, title: title, body: body || '' }, 8000)
+  }
+
+  /** 复制更新命令到剪贴板，并弹一条回执。 */
+  function copyUpdateCmd(cfg) {
+    const t = ui((cfg && cfg.locale) || state.config.locale)
+    try {
+      if (typeof navigator !== 'undefined' && navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(state.updateCmd || LOCAL_UPDATE_CMD)
+      }
+    } catch (e) { /* ignore */ }
+    flash(t.cmdCopied, state.updateCmd || LOCAL_UPDATE_CMD)
+  }
+
   function handleItems(items) {
     for (const item of items) {
       if (item.category === 'test') { addToast(item, 10000); continue }
@@ -320,6 +392,13 @@ const apply = async (ctx) => {
     const st = await api.state()
     if (st && st.config) state.config = st.config
   } catch (e) { console.error('task-toast state failed', e) }
+  try {
+    const v = await api.version()
+    if (v) {
+      state.updateInfo = v
+      if (typeof v.updateCmd === 'string' && v.updateCmd) state.updateCmd = v.updateCmd
+    }
+  } catch (e) { /* Host 不可达时保持本地兜底命令 */ }
   pump()
 
   ctx.effect(() => { return () => { state.disposed = true } })
@@ -358,8 +437,10 @@ const apply = async (ctx) => {
     const hostStyle = accent ? { '--dsh-tt-accent': accent } : null
     if (!items.length) return React.createElement('div', { className: 'dsh-tt-host dsh-tt-host--' + cfg.position + themeClass, style: hostStyle })
     const nodes = items.map((toast) => {
-      const canNavigate = cfg.viewBehavior === 'navigate' && !!toast.sessionId
+      const isUpdate = toast.category === 'update'
+      const canNavigate = cfg.viewBehavior === 'navigate' && !!toast.sessionId && !isUpdate
       const onView = () => {
+        if (isUpdate) { copyUpdateCmd(cfg); dismissToast(toast.id); return }
         if (canNavigate) { openSession(toast.sessionId); dismissToast(toast.id) }
         else { toast.expanded = !toast.expanded; emitter.emit() }
       }
@@ -372,7 +453,7 @@ const apply = async (ctx) => {
           onClick: (e) => { e.stopPropagation(); try { if (navigator && navigator.clipboard) navigator.clipboard.writeText(toast.body || '') } catch (err) { /* ignore */ } },
         }, t.copy) : null,
         React.createElement('div', { key: 'actions', className: 'dsh-tt-actions' },
-          React.createElement('button', { key: 'view', className: 'dsh-tt-btn dsh-tt-btn--primary', onClick: onView }, t.viewResult),
+          React.createElement('button', { key: 'view', className: 'dsh-tt-btn dsh-tt-btn--primary', onClick: onView }, isUpdate ? t.updateBtn : t.viewResult),
           React.createElement('button', { key: 'later', className: 'dsh-tt-btn', onClick: () => snoozeToast(toast) }, t.later),
           React.createElement('button', { key: 'dismiss', className: 'dsh-tt-btn', onClick: () => dismissToast(toast.id) }, t.dismiss)
         ),
@@ -411,11 +492,71 @@ const apply = async (ctx) => {
       if (patch.showSummary !== undefined) next.showSummary = patch.showSummary
       if (patch.onlyOtherSessions !== undefined) next.onlyOtherSessions = patch.onlyOtherSessions
       if (patch.autoDismissMs !== undefined) next.autoDismissMs = patch.autoDismissMs
+      if (patch.checkUpdate !== undefined) next.checkUpdate = patch.checkUpdate
       if (patch.category) next.categories[patch.category] = patch.level
       state.config = next
       setCfg(next)
       api.config(next).catch(() => { /* ignore */ })
     }
+
+    // ---------- 版本与更新 ----------
+    const [upd, setUpd] = React.useState(state.updateInfo)
+    const [updChecking, setUpdChecking] = React.useState(false)
+    const [updRunning, setUpdRunning] = React.useState(false)
+    const [updLog, setUpdLog] = React.useState('')
+
+    React.useEffect(() => {
+      if (state.updateInfo) { setUpd(state.updateInfo); return }
+      api.version().then((v) => {
+        state.updateInfo = v
+        if (typeof v.updateCmd === 'string' && v.updateCmd) state.updateCmd = v.updateCmd
+        setUpd(v)
+      }).catch(() => { /* 保持 null，显示「尚未检查」 */ })
+    }, [])
+
+    function doCheck() {
+      setUpdChecking(true)
+      setUpdLog('')
+      api.checkUpdate().then((v) => {
+        state.updateInfo = v
+        setUpd(v)
+      }).catch((err) => {
+        setUpd({ local: VERSION, latest: null, hasUpdate: false, error: (err && err.message) || String(err), checkedAt: Date.now() })
+      }).then(() => setUpdChecking(false))
+    }
+
+    function doCopyCmd() {
+      try {
+        if (typeof navigator !== 'undefined' && navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(state.updateCmd || LOCAL_UPDATE_CMD)
+        }
+      } catch (e) { /* ignore */ }
+      setUpdLog((cfg.locale === 'en' ? 'Command copied:\n' : '已复制更新命令：\n') + (state.updateCmd || LOCAL_UPDATE_CMD) + (cfg.locale === 'en' ? '\n\nRun it in a terminal, then restart dsh.' : '\n\n请在终端执行后重启 dsh。'))
+    }
+
+    function doUpdate() {
+      setUpdRunning(true)
+      setUpdLog(cfg.locale === 'en' ? 'Running: dsh plugin remove → add … (may take a minute)' : '正在执行：dsh plugin remove → add …（可能需要一分钟）')
+      api.update().then((r) => {
+        const head = r && r.ok
+          ? (cfg.locale === 'en' ? '✅ Update finished. Restart dsh to apply.\n\n' : '✅ 更新完成，请重启 dsh 生效。\n\n')
+          : (cfg.locale === 'en' ? '⚠️ Auto-update failed. Please copy the command and run it manually.\n\n' : '⚠️ 自动更新失败，请复制命令在终端手动执行。\n\n')
+        setUpdLog(head + ((r && r.log) || ''))
+      }).catch((err) => {
+        setUpdLog((cfg.locale === 'en' ? '⚠️ Update request failed: ' : '⚠️ 更新请求失败：') + ((err && err.message) || String(err)) + '\n\n' + (cfg.locale === 'en' ? 'Fallback command:\n' : '可手动执行：\n') + (state.updateCmd || LOCAL_UPDATE_CMD))
+      }).then(() => setUpdRunning(false))
+    }
+
+    const updStatusText =
+      !upd ? t.statusUnknown
+        : upd.checking || updChecking ? t.statusChecking
+          : upd.error ? (cfg.locale === 'en' ? 'Check failed' : '检查失败')
+            : upd.hasUpdate ? t.statusNew + ' · ' + upd.latest
+              : t.statusLatest
+    const updStatusColor = !upd ? 'rgba(60,60,67,0.55)'
+      : upd.checking || updChecking ? 'rgba(60,60,67,0.55)'
+        : upd.error ? '#FF9F0A'
+          : upd.hasUpdate ? '#007AFF' : '#34C759'
 
     function selectRow(label, desc, control) {
       return React.createElement('div', { key: label, className: 'dsh-tt-row' },
@@ -488,6 +629,7 @@ const apply = async (ctx) => {
       selectRow(t.viewBehavior, null, React.createElement('select', { className: 'dsh-tt-select', value: cfg.viewBehavior, onChange: (e) => update({ viewBehavior: e.target.value }) }, vbOpts)),
       selectRow(t.taskLevel, null, React.createElement('select', { className: 'dsh-tt-select', value: cfg.categories.task, onChange: (e) => update({ category: 'task', level: e.target.value }) }, levelOpts)),
       selectRow(t.errorLevel, null, React.createElement('select', { className: 'dsh-tt-select', value: cfg.categories.error, onChange: (e) => update({ category: 'error', level: e.target.value }) }, levelOpts)),
+      selectRow(t.updateLevel, null, React.createElement('select', { className: 'dsh-tt-select', value: cfg.categories.update, onChange: (e) => update({ category: 'update', level: e.target.value }) }, levelOpts)),
       React.createElement('label', { className: 'dsh-tt-check' },
         React.createElement('input', { type: 'checkbox', checked: !!cfg.showSummary, onChange: (e) => update({ showSummary: e.target.checked }) }),
         ' ' + t.showSummary
@@ -499,7 +641,32 @@ const apply = async (ctx) => {
       selectRow(t.autoDismiss, null, React.createElement('input', { className: 'dsh-tt-input', type: 'number', min: '0', step: '1', value: String(cfg.autoDismissMs), style: { width: '90px' }, onChange: (e) => { const v = parseInt(e.target.value, 10); update({ autoDismissMs: isNaN(v) ? 0 : v }) } })),
       React.createElement('div', { className: 'dsh-tt-actions-row' },
         React.createElement('button', { className: 'dsh-tt-btn-lg', onClick: () => { sendTest() } }, t.testBtn)
-      )
+      ),
+
+      // ---------- 版本与更新 ----------
+      React.createElement('h3', { className: 'dsh-tt-section-title', style: { marginTop: '6px' } }, t.versionSection),
+      React.createElement('div', { className: 'dsh-tt-row' },
+        React.createElement('div', { className: 'dsh-tt-row-text' },
+          React.createElement('div', { className: 'dsh-tt-row-label' }, t.currentVersion + ' v' + ((upd && upd.local) || VERSION)),
+          React.createElement('div', { className: 'dsh-tt-row-desc' },
+            (cfg.locale === 'en' ? 'Latest: ' : '最新版本：') + ((upd && upd.latest) ? 'v' + upd.latest : '—')
+            + (upd && upd.checkedAt ? (' · ' + new Date(upd.checkedAt).toLocaleString()) : '')
+            + (upd && upd.error ? (' · ' + String(upd.error).slice(0, 60)) : '')
+          )
+        ),
+        React.createElement('span', { style: { color: updStatusColor, fontWeight: 600 } }, updStatusText)
+      ),
+      React.createElement('label', { className: 'dsh-tt-check' },
+        React.createElement('input', { type: 'checkbox', checked: !!cfg.checkUpdate, onChange: (e) => update({ checkUpdate: e.target.checked }) }),
+        ' ' + t.autoCheck
+      ),
+      React.createElement('div', { className: 'dsh-tt-actions-row' },
+        React.createElement('button', { className: 'dsh-tt-btn-lg dsh-tt-btn-lg--ghost', onClick: () => doCheck(), disabled: updChecking || updRunning }, updChecking ? t.checking : t.checkNow),
+        React.createElement('button', { className: 'dsh-tt-btn-lg dsh-tt-btn-lg--ghost', onClick: () => doCopyCmd(), disabled: updRunning }, t.copyCmd),
+        React.createElement('button', { className: 'dsh-tt-btn-lg', onClick: () => doUpdate(), disabled: updRunning || updChecking }, updRunning ? t.updating : t.updateNow)
+      ),
+      updLog ? React.createElement('pre', { className: 'dsh-tt-log' }, updLog) : null,
+      state.hostStatus === 'error' ? React.createElement('p', { className: 'dsh-tt-hint' }, '⚠️ ' + t.hostNeeded) : null
     )
   }
 

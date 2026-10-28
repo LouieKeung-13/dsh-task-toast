@@ -29,6 +29,10 @@
   为主按钮着色。
 - **广泛的完成事件覆盖** —— 子代理结束、后台任务完成、工作流子任务结束、
   以及顶层会话 `running → idle` 切换。
+- **内置更新提醒** —— Host 在启动 8 秒后及此后每 6 小时查询上游 GitHub Release
+  （可开关）。发现新版本时弹出带「更新」按钮的通知；设置页提供
+  **立即检查 / 复制更新命令 / 一键更新**（由 Host 代跑 `dsh plugin remove` + `add`），
+  不必再手动卸载重装。
 - **不改动 dsh 源码** —— 通过 Host 暴露的 HTTP 通道通信，借助 dsh 公开 slot 渲染，
   可随 dsh 升级平滑过渡。
 
@@ -55,8 +59,8 @@ dsh 插件遵循 **Host + Client（宿主 + 客户端）** 分离结构。本插
 
 | 半体 | 文件（源码 → 产物） | 运行时 | 职责 |
 | --- | --- | --- | --- |
-| Host | `src/static/host.js` → `lib/index.js` | Node | 事件订阅、入队、HTTP 通道（`state` / `config` / `poll` / `test` / `active`）。 |
-| Client | `src/static/client.js` → `lib/client.js` | WebView | 长轮询消费、浮层 UI、设置面板。通过 `window.__ModuleLoader__` 注入。 |
+| Host | `src/static/host.js` → `lib/index.js` | Node | 事件订阅、入队、HTTP 通道（`state` / `config` / `poll` / `test` / `active` / `version` / `check-update` / `update`）、上游版本轮询。 |
+| Client | `src/static/client.js` → `lib/client.js` | WebView | 长轮询消费、浮层 UI、设置面板、更新面板。通过 `window.__ModuleLoader__` 注入。 |
 
 `package.json` 同时声明了 `dsh.bundle.patch`（经 `cordis.patch.yml` 注册 Host）
 **和** `dsh.client`（Web 客户端 bundle 及其注入包）——后者正是让 dsh 正确注册
@@ -82,15 +86,57 @@ dsh plugin --profile web add /绝对路径/dsh-task-toast
 启动时读取的 bundle，设置页（Client 端）可能热更新，但承载通知的 HTTP 路由
 只有完整重启后才会注册。
 
-### 从 v1.0.0 升级
+## 更新
+
+插件现在会主动告诉你「上游有新版本」，并能自行重装。
+
+**自动检查** —— Host 在启动 8 秒后、之后每 6 小时查询一次
+`https://api.github.com/repos/LouieKeung-13/dsh-task-toast/releases/latest`
+（可在设置里关闭）。若上游 tag 比本地版本新，会弹出通知：
+
+```
+插件有新版本 1.4.0
+当前 1.3.0 · 最新 1.4.0。点击「更新」复制更新命令，或在设置页一键更新
+（完成后需重启 dsh）。
+```
+
+- 通知上的 **更新** 按钮会把更新命令复制到剪贴板。
+- **设置 → 任务提示 → 版本与更新** 显示当前版本 / 最新版本 / 上次检查时间，
+  并提供三个按钮：
+  - **立即检查** —— 立刻查一次上游。
+  - **复制更新命令** —— 复制两行 `remove` + `add` 命令。
+  - **一键更新** —— 由 Host 直接执行命令，并把 CLI 输出实时显示在日志框里。
+
+```bash
+# 一键更新实际执行的命令
+dsh plugin --profile web remove dsh-task-toast
+dsh plugin --profile web add github:LouieKeung-13/dsh-task-toast
+```
+
+> **仍需重启。** dsh 在启动时读取插件 bundle，所以即便一键更新成功，也必须
+> 彻底退出再启动 dsh 才会生效——按钮省掉的是手敲命令，不是重启。
+>
+> 若一键更新失败（例如 `dsh` 不在 `PATH`、profile 目录被占用），请复制命令
+> 到自己的终端执行。
+
+### 从 v1.0.0 / v1.1.x / v1.2.0 升级
 
 v1.0.0 因缺少 `dsh.client` 清单、且直接发布裸源码而未打包，被 dsh 识别为
-「不包含任何组件」。请 **重新安装 / 更新** 到 v1.1.1：
+「不包含任何组件」。从 v1.3.0 起直接在设置页点 **一键更新** 即可；手动方式：
 
 ```bash
 dsh plugin --profile web remove dsh-task-toast
 dsh plugin --profile web add github:LouieKeung-13/dsh-task-toast
 ```
+
+### 版本记录
+
+- **v1.3.0** —— 更新检查（启动 + 每 6 小时）、`update` 通知分类、
+  「版本与更新」设置面板、Host 侧一键更新。同时修复了一个潜在缺陷：Host 端
+  生成通知标题时会抛 `config is not defined`，导致所有 Host 侧通知静默失效。
+- **v1.2.0** —— Apple 风毛玻璃、自适应皮肤主题、显式颜色兜底（修复主按钮空白）。
+- **v1.1.1** —— Host 诊断（`host apply()` 日志、连接状态行、测试按钮本地兜底预览）。
+- **v1.1.0** —— 修正 dsh 插件契约（`dsh.client` 清单 + 构建产物 `lib/`）。
 
 ### 验证
 
@@ -115,7 +161,7 @@ dsh plugin --profile web add github:LouieKeung-13/dsh-task-toast
    若看到 `长轮询失败（Host 可能未加载/未重启）`，说明 Host HTTP 路由无响应。
 4. **查看 dsh 进程日志 / 终端** 是否有：
    - `[dsh-task-toast] host apply() 开始执行…` → Host 插件已加载。
-   - `[dsh-task-toast] host 已挂载：5 条 HTTP 路由…` → 路由已注册（正常）。
+   - `[dsh-task-toast] host 已挂载：8 条 HTTP 路由…` → 路由已注册（正常）。
    - `[dsh-task-toast] FATAL: ctx.webServer 不可用…` → 你的 dsh 版本未提供
      `webServer`，插件无法提供 HTTP（需要改代码适配）。
 5. **测试按钮在 Host 不可达时会本地兜底弹窗**，所以出现「测试通知（本地预览）」
@@ -139,7 +185,12 @@ dsh plugin --profile web add github:LouieKeung-13/dsh-task-toast
 | 仅推送其他会话 | 抑制当前正在查看的会话的通知。 |
 | 自动消失（秒） | 0 = 不自动关闭；否则 N 秒后自动消失。 |
 | 任务完成 / 错误 级别 | `关闭` / `应用内提示`（任务默认）/ `系统通知`。 |
+| 插件更新提醒 | 内置更新通知的级别（默认「应用内提示」）。 |
 | 发送测试通知 | 推送一条示例通知以验证链路。 |
+| 自动检查更新 | 启动时及此后每 6 小时查询上游 Release。 |
+| 立即检查 | 立刻查一次上游，并显示当前版本 / 最新版本。 |
+| 复制更新命令 | 把两行 `remove` + `add` 命令复制到剪贴板。 |
+| 一键更新 | 由 Host 执行 `remove` + `add`，并把 CLI 输出流式显示。 |
 
 > 默认界面语言为 **中文（简体）**。通知标题/正文在 Host 端按同一语言设置本地化。
 
@@ -149,7 +200,13 @@ dsh plugin --profile web add github:LouieKeung-13/dsh-task-toast
 node scripts/build-static.mjs     # -> lib/{config.js, index.js, client.js}
 node scripts/build-dynamic.mjs    # -> dynamic/{host,client}.body.js（可粘贴进 cordis_define）
 npm run check                    # 构建两者
+npm test                         # 构建 + Host/Client 冒烟测试（tests/smoke-update.mjs）
 ```
+
+`npm test` 会用 mock 的 GitHub API 完整跑一遍更新链路：路由注册、本地版本解析、
+上游更新/更旧/相等三种情形、`update` 通知推送、client bundle 导出。它会先探测
+本机是否真的装了 `dsh` CLI——若已安装则 **跳过真实 remove/add**，绝不会破坏你的
+现有安装。
 
 - 客户端半体是一个被包裹在 `window.__ModuleLoader__.load` 中的 CommonJS 模块；
   React 由 harness 提供（`require('react')`），因此除 `scripts/build-static.mjs`

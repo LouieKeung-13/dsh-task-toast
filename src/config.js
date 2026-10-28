@@ -6,6 +6,15 @@
 // 因此这里只能包含无任何运行时依赖的常量与函数（不能 import 其他模块、不能引用
 // ctx / React / host 等宿主符号）。
 
+/** 插件版本（与 package.json 保持同步；Host 侧会优先读真实 package.json）。 */
+export const VERSION = '1.3.0'
+
+/** 上游仓库 owner/repo —— 更新检查与更新命令都基于它。 */
+export const REPO = 'LouieKeung-13/dsh-task-toast'
+
+/** dsh 安装源（更新命令用）。 */
+export const INSTALL_SOURCE = 'github:' + REPO
+
 /** 浮层弹出位置（四角可选）。 */
 export const POSITIONS = [
   { id: 'top-left', zh: '左上角', en: 'Top-left' },
@@ -37,10 +46,11 @@ export const THEMES = [
 ]
 export const THEME_IDS = THEMES.map((t) => t.id)
 
-/** 通知分类：task = 任务完成（默认应用内提示）；error = 错误失败（默认关闭）。 */
+/** 通知分类：task = 任务完成；error = 错误失败；update = 插件自身有新版本。 */
 export const CATEGORIES = [
   { id: 'task', zh: '任务完成', en: 'Task completed', def: 'app' },
   { id: 'error', zh: '错误失败', en: 'Error', def: 'off' },
+  { id: 'update', zh: '插件更新', en: 'Plugin update', def: 'app' },
 ]
 export const CATEGORY_KEYS = CATEGORIES.map((c) => c.id)
 
@@ -66,7 +76,34 @@ export const DEFAULT_CONFIG = {
   categories: {
     task: 'app',
     error: 'off',
+    update: 'app',
   },
+  // ---- 更新检查 ----
+  checkUpdate: true,        // 开关：是否在 Host 启动时 / 周期性检查上游新版本
+  updateIntervalHours: 6,   // 自动检查间隔（小时）
+}
+
+/** 生成更新命令（两行，兼容不识别 `&&` 的 shell）。 */
+export function buildUpdateCommand() {
+  return [
+    'dsh plugin --profile web remove dsh-task-toast',
+    'dsh plugin --profile web add ' + INSTALL_SOURCE,
+  ].join('\n')
+}
+
+/** 语义化版本比较：a > b 返回 1，a < b 返回 -1，相等返回 0（容忍 v 前缀与缺失段）。 */
+export function compareVersion(a, b) {
+  const pa = String(a == null ? '' : a).replace(/^v/i, '').split('.')
+  const pb = String(b == null ? '' : b).replace(/^v/i, '').split('.')
+  for (let i = 0; i < 3; i += 1) {
+    const na = parseInt(pa[i], 10)
+    const nb = parseInt(pb[i], 10)
+    const va = isNaN(na) ? 0 : na
+    const vb = isNaN(nb) ? 0 : nb
+    if (va > vb) return 1
+    if (va < vb) return -1
+  }
+  return 0
 }
 
 /** 仅接受合法级别，其余一律收敛为 'off'。 */
@@ -101,6 +138,11 @@ export function normalizeConfig(input) {
       typeof src.autoDismissMs === 'number'
         ? Math.max(2000, Math.min(60000, src.autoDismissMs | 0))
         : DEFAULT_CONFIG.autoDismissMs,
+    checkUpdate: src.checkUpdate === undefined ? DEFAULT_CONFIG.checkUpdate : src.checkUpdate !== false,
+    updateIntervalHours:
+      typeof src.updateIntervalHours === 'number'
+        ? Math.max(1, Math.min(72, src.updateIntervalHours | 0))
+        : DEFAULT_CONFIG.updateIntervalHours,
     categories: cats,
   }
 }
