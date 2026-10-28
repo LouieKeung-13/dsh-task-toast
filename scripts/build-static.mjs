@@ -80,4 +80,16 @@ try {
   process.exit(1)
 }
 
+// 6) PowerShell 脚本必须使用 CRLF：Windows PowerShell 5.1 的 here-string（@'...'@）
+//    在 LF-only 文件里会解析错位，导致整个脚本报语法错误、卡片进程秒退（v1.5.2 教训）。
+for (const rel of ['scripts/topmost.ps1', 'scripts/card.ps1']) {
+  const p = join(root, rel)
+  let txt = readFileSync(p, 'utf8')
+  const fixed = txt.replace(/\r?\n/g, '\r\n')
+  if (fixed !== txt) {
+    writeFileSync(p, fixed)
+    console.log('[build-static] ' + rel + ' 已规范为 CRLF（PS 5.1 here-string 兼容）')
+  }
+}
+
 console.log('[build-static] 完成：lib/{config.js, index.js, client.js}')

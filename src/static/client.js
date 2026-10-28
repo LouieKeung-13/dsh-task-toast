@@ -101,6 +101,7 @@ function ui(locale) {
     cardUnsupported: '当前环境不支持独立卡片（仅 Windows 桌面客户端）',
     cardSelfTest: '卡片自检',
     cardSelfOk: '通过（可正常弹出）',
+    cardLastFail: '最近一次卡片未显示',
   }
   const en = {
     settingsTitle: 'Task notifications',
@@ -163,6 +164,7 @@ function ui(locale) {
     cardUnsupported: 'Standalone card is unavailable here (Windows desktop client only)',
     cardSelfTest: 'Card self-test',
     cardSelfOk: 'passed (card can be shown)',
+    cardLastFail: 'Last card attempt failed',
   }
   return locale === 'en' ? en : zh
 }
@@ -234,10 +236,7 @@ function injectCss() {
 .dsh-tt-theme-light .dsh-tt-close { background: rgba(120, 120, 128, 0.18); color: rgba(60, 60, 67, 0.7); }
 .dsh-tt-theme-light .dsh-tt-close:hover { background: rgba(120, 120, 128, 0.32); color: rgba(28, 28, 30, 0.95); }
 
-.dsh-tt-task { border-left: 3px solid #34C759; }
-.dsh-tt-error { border-left: 3px solid #FF453A; }
-.dsh-tt-test { border-left: 3px solid var(--tt-accent); }
-.dsh-tt-update { border-left: 3px solid #FF9F0A; }
+/* 分类色竖条已按反馈移除：整卡统一为单色系，不再用彩色区分类型 */
 
 .dsh-tt-title { font-weight: 600; font-size: 13.5px; line-height: 1.35; letter-spacing: -0.01em; }
 .dsh-tt-body { font-size: 12.5px; line-height: 1.45; color: rgba(60, 60, 67, 0.7); overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; word-break: break-all; }
@@ -253,9 +252,10 @@ function injectCss() {
 .dsh-tt-theme-dark .dsh-tt-btn:hover { background: rgba(255, 255, 255, 0.22); }
 @media (prefers-color-scheme: dark) { .dsh-tt-btn { background: rgba(255, 255, 255, 0.14); color: rgba(245, 245, 247, 0.95); border-color: rgba(255, 255, 255, 0.12); } .dsh-tt-btn:hover { background: rgba(255, 255, 255, 0.22); } }
 
-.dsh-tt-btn--primary { background: var(--tt-accent); color: #fff; border-color: transparent; }
-.dsh-tt-btn--primary:hover { background: var(--tt-accent); filter: brightness(1.08); }
-@media (prefers-color-scheme: dark) { .dsh-tt-btn--primary { color: #fff; } }
+/* 主按钮 = 单色：浅色环境近黑、深色环境近白（不再跟随强调色） */
+.dsh-tt-btn--primary { background: #1c1c1e; color: #fff; border-color: transparent; }
+.dsh-tt-btn--primary:hover { filter: brightness(1.3); }
+@media (prefers-color-scheme: dark) { .dsh-tt-btn--primary { background: rgba(245, 245, 247, 0.92); color: #1c1c1e; } .dsh-tt-btn--primary:hover { filter: brightness(0.92); } }
 
 .dsh-tt-close { position: absolute; top: 8px; right: 10px; width: 22px; height: 22px; display: flex; align-items: center; justify-content: center; background: rgba(120, 120, 128, 0.18); border: none; border-radius: 50%; color: rgba(60, 60, 67, 0.7); cursor: pointer; font-size: 13px; line-height: 1; }
 .dsh-tt-close:hover { background: rgba(120, 120, 128, 0.32); color: rgba(28, 28, 30, 0.95); }
@@ -271,11 +271,14 @@ function injectCss() {
 .dsh-tt-row-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .dsh-tt-row-label { font-size: 13px; font-weight: 500; color: var(--text, rgba(28, 28, 30, 0.92)); }
 .dsh-tt-row-desc { font-size: 11px; color: rgba(60, 60, 67, 0.55); }
-.dsh-tt-select, .dsh-tt-input { background: rgba(255, 255, 255, 0.6); color: rgba(28, 28, 30, 0.92); border: 1px solid rgba(120, 120, 128, 0.28); border-radius: 8px; padding: 4px 6px; font-size: 12px; max-width: 180px; }
+/* 面板控件统一颜色：输入框与下拉框使用同一中性底色，深浅主题下都与行背景一致 */
+.dsh-tt-settings .dsh-tt-select, .dsh-tt-settings .dsh-tt-input { background: rgba(120, 120, 128, 0.16) !important; color: var(--text, rgba(28, 28, 30, 0.92)) !important; border: 1px solid rgba(120, 120, 128, 0.32); border-radius: 8px; padding: 4px 8px; font-size: 12px; max-width: 180px; }
 .dsh-tt-check { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text, rgba(28, 28, 30, 0.92)); cursor: pointer; }
 .dsh-tt-actions-row { display: flex; gap: 8px; }
-.dsh-tt-btn-lg { background: #007AFF; color: #fff; border: 1px solid transparent; border-radius: 8px; padding: 6px 14px; font-size: 12.5px; font-weight: 500; cursor: pointer; }
-.dsh-tt-btn-lg:hover { filter: brightness(1.06); }
+/* 面板主按钮 = 单色（与浮层主按钮同一套） */
+.dsh-tt-btn-lg { background: #1c1c1e; color: #fff; border: 1px solid transparent; border-radius: 8px; padding: 6px 14px; font-size: 12.5px; font-weight: 500; cursor: pointer; }
+.dsh-tt-btn-lg:hover { filter: brightness(1.3); }
+@media (prefers-color-scheme: dark) { .dsh-tt-btn-lg { background: rgba(245, 245, 247, 0.92); color: #1c1c1e; } .dsh-tt-btn-lg:hover { filter: brightness(0.92); } }
 .dsh-tt-btn-lg--ghost { background: rgba(120, 120, 128, 0.14); color: var(--text, rgba(28, 28, 30, 0.9)); border-color: rgba(120, 120, 128, 0.28); }
 .dsh-tt-btn-lg:disabled { opacity: 0.5; cursor: default; filter: none; }
 .dsh-tt-log { margin: 0; max-height: 220px; overflow: auto; white-space: pre-wrap; word-break: break-all; padding: 8px 10px; border-radius: 8px; background: rgba(120, 120, 128, 0.1); border: 1px solid rgba(120, 120, 128, 0.2); color: var(--text, rgba(28, 28, 30, 0.88)); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11.5px; line-height: 1.5; }
@@ -568,13 +571,20 @@ const apply = async (ctx) => {
 
     function doTopmostProbe() {
       const mode = (cfg.topmost && cfg.topmost.mode) || 'card'
+      const fmtErr = (r, err) => {
+        const parts = []
+        if (r && r.error) parts.push(r.error)
+        if (r && r.stderr) parts.push(String(r.stderr).replace(/\s+/g, ' ').slice(0, 120))
+        if (!parts.length && err) parts.push((err && err.message) || String(err))
+        return parts.join(' · ')
+      }
       if (mode === 'card') {
         setTopmostMsg(cfg.locale === 'en' ? 'Showing card…' : '正在弹出卡片…')
         api.card('probe').then((r) => {
           if (r && r.ok) setTopmostMsg(t.cardOk)
-          else setTopmostMsg(t.cardFail + (r && r.error ? ' · ' + r.error : ''))
+          else setTopmostMsg(t.cardFail + (fmtErr(r) ? '：' + fmtErr(r) : ''))
         }).catch((err) => {
-          setTopmostMsg(t.cardFail + ' · ' + ((err && err.message) || String(err)))
+          setTopmostMsg(t.cardFail + '：' + ((err && err.message) || String(err)))
         })
         return
       }
@@ -750,6 +760,11 @@ const apply = async (ctx) => {
       (((cfg.topmost && cfg.topmost.mode) || 'card') === 'card' && upd && upd.cardSelfTest && upd.cardSelfTest !== 'pending')
         ? React.createElement('p', { className: 'dsh-tt-hint' },
           t.cardSelfTest + ' · ' + (upd.cardSelfTest === 'ok' ? t.cardSelfOk : String(upd.cardSelfTest).slice(0, 120)))
+        : null,
+      (((cfg.topmost && cfg.topmost.mode) || 'card') === 'card' && upd && upd.lastCard && upd.lastCard.ok === false)
+        ? React.createElement('p', { className: 'dsh-tt-hint' },
+          t.cardLastFail + '：' + String(upd.lastCard.error || '').slice(0, 160)
+          + (upd.lastCard.at ? ' · ' + new Date(upd.lastCard.at).toLocaleTimeString() : ''))
         : null,
 
       // ---------- 版本与更新 ----------

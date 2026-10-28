@@ -189,6 +189,15 @@ dsh plugin --profile web add github:LouieKeung-13/dsh-task-toast
 
 ### Changelog
 
+- **v1.5.2** — root-cause fix for the standalone card never appearing: the script
+  used LF line endings, but Windows PowerShell 5.1 requires CRLF for here-strings
+  (`@'...'@`), so parsing failed and the process exited instantly — and the old
+  code swallowed that failure silently. The build now enforces CRLF for ps1
+  files. The card must also report "shown" back to the Host; on failure or a 5s
+  timeout the notification falls back to the in-app overlay and the exact error
+  is shown in Settings. The UI is now **monochrome** (near-black / near-white
+  primary buttons, no colored stripes or accent), and settings inputs & selects
+  share one consistent color.
 - **v1.5.0** — **standalone floating card**: adds `scripts/card.ps1`
   (PowerShell + WinForms) which spawns a borderless always-on-top window truly
   detached from dsh (DWM acrylic blur, rounded corners, shadow, no focus stealing,

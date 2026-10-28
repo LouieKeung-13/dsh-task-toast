@@ -311,9 +311,11 @@ export default {
     // 与 topmost 的区别：不抬 dsh 大窗口，而是起一个独立的无边框浮窗，
     // 只占屏幕一角、真·TopMost、不抢焦点，按钮点击后 POST 回 /card-action。
     const cardChildren = new Map()   // slot -> child
-    const cardItems = new Map()      // id(seq) -> item
+    const cardItems = new Map()      // id(seq) -> item（供 /card-action 回调查详情）
     let cardSeq = 0
     let selfPort = 0                 // 从任意一条入站请求的 Host 头里学到的监听端口
+    // 最近一次卡片结果（/version 暴露给设置页：卡片没弹出来时能直接看到原因）
+    let lastCard = { at: 0, ok: false, error: '尚未弹出过卡片' }
 
     function cardSupported() {
       if (process.platform !== 'win32' || !CARD_SCRIPT) return false
@@ -335,83 +337,97 @@ export default {
     }
 
     /**
-     * 弹出独立卡片。失败（脚本缺失 / 启动异常 / 立即退出）时回退到「抬 dsh 窗口」，
-     * 保证通知不会因为卡片不可用而彻底消失。
+     * 启动独立卡片进程，并等待它回报「窗口已显示」。
+     * 返回 Promise<{ ok, error, stderr }>：
+     *   · 卡片确认显示 → { ok: true }
+     *   · 进程异常退出 / 5 秒内未显示 → { ok: false, error, stderr }
+     * 调用方在失败时必须把通知转回应用内呈现 —— 通知永远不能因为卡片挂了而丢掉。
      */
-    function showCard(item) {
-      if (!cardSupported() || disposed) return false
-      const slot = allocSlot()
-      const id = String(item.seq)
-      cardItems.set(id, item)
-      if (cardItems.size > 40) {
-        const oldest = cardItems.keys().next().value
-        if (oldest !== undefined) cardItems.delete(oldest)
-      }
-      cardSeq += 1
-
-      const args = [
-        '-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass',
-        '-File', CARD_SCRIPT,
-        '-Title', String(item.title || '').replace(/[\r\n]+/g, ' ').slice(0, 120),
-        '-Body', String(item.body || '').replace(/[\r\n]+/g, ' ').slice(0, 300),
-        '-SessionId', String(item.sessionId || ''),
-        '-Locale', config.locale === 'en' ? 'en' : 'zh',
-        '-Position', String(config.position || 'bottom-right'),
-        '-Theme', String(config.theme || 'auto'),
-        '-Accent', config.accent || '#007AFF',
-        '-Timeout', String(cardTimeoutMs()),
-        '-Slot', String(slot),
-        '-Id', id,
-      ]
-      if (selfPort) args.push('-CallbackUrl', 'http://127.0.0.1:' + selfPort + '/dsh-task-toast/card-action')
-
-      let child
-      try {
-        child = spawn('powershell', args, { windowsHide: true })
-      } catch (e) {
-        cardItems.delete(id)
-        console.warn('[dsh-task-toast] 卡片启动失败，回退到窗口置顶：' + ((e && e.message) || e))
-        return false
-      }
-
-      const startedAt = Date.now()
-      let settled = false
-      let stderrBuf = ''
-      const release = () => {
-        if (cardChildren.get(slot) === child) cardChildren.delete(slot)
-      }
-      cardChildren.set(slot, child)
-
-      const fallback = (why) => {
-        if (settled) return
-        settled = true
-        console.warn('[dsh-task-toast] 独立卡片不可用（' + why + '），回退到窗口置顶')
-        if (stderrBuf) console.warn('[dsh-task-toast] 卡片 stderr：' + stderrBuf.slice(-600))
-        cardItems.delete(id)
-        // 卡片没出来 → 至少把 dsh 窗口顶上来，用户仍能看到
-        holdTopmost()
-      }
-
-      try {
-        if (child.stderr) child.stderr.on('data', (d) => { stderrBuf += String(d); if (stderrBuf.length > 4000) stderrBuf = stderrBuf.slice(-2000) })
-      } catch (e) { /* ignore */ }
-
-      child.on('error', (e) => fallback('spawn error: ' + ((e && e.message) || e)))
-      child.on('close', (code) => {
-        release()
-        // 立刻退出且非 0：多半是 PowerShell / WinForms 侧出错（脚本缺失、策略拦截等）
-        if (!settled && code !== 0 && Date.now() - startedAt < 4000) fallback('exit ' + code)
-        settled = true
-        // 延迟清理：按钮点击的 HTTP 回调可能晚于子进程退出到达
-        if (ctx.timer && typeof ctx.timer.timeout === 'function') {
-          ctx.timer.timeout(() => { cardItems.delete(id) }, 15000)
-        } else {
-          cardItems.delete(id)
+    function spawnCard(item) {
+      return new Promise((resolve) => {
+        if (!cardSupported() || disposed) { resolve({ ok: false, error: 'card script unavailable' }); return }
+        const slot = allocSlot()
+        const id = String(item.seq)
+        cardItems.set(id, item)
+        if (cardItems.size > 40) {
+          const oldest = cardItems.keys().next().value
+          if (oldest !== undefined) cardItems.delete(oldest)
         }
-      })
+        cardSeq += 1
 
-      console.log('[dsh-task-toast] 已弹出独立卡片 #' + cardSeq + '（slot ' + slot + '，' + cardTimeoutMs() + 'ms 后自动消失）')
-      return true
+        const args = [
+          '-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass',
+          '-File', CARD_SCRIPT,
+          '-Title', String(item.title || '').replace(/[\r\n]+/g, ' ').slice(0, 120),
+          '-Body', String(item.body || '').replace(/[\r\n]+/g, ' ').slice(0, 300),
+          '-SessionId', String(item.sessionId || ''),
+          '-Locale', config.locale === 'en' ? 'en' : 'zh',
+          '-Position', String(config.position || 'bottom-right'),
+          '-Theme', String(config.theme || 'auto'),
+          '-Accent', config.accent || '#007AFF',
+          '-Timeout', String(cardTimeoutMs()),
+          '-Slot', String(slot),
+          '-Id', id,
+        ]
+        if (selfPort) args.push('-CallbackUrl', 'http://127.0.0.1:' + selfPort + '/dsh-task-toast/card-action')
+
+        let child
+        try {
+          child = spawn('powershell', args, { windowsHide: true })
+        } catch (e) {
+          cardItems.delete(id)
+          resolve({ ok: false, error: 'spawn: ' + ((e && e.message) || e), stderr: '' })
+          return
+        }
+
+        const startedAt = Date.now()
+        let settled = false
+        let stderrBuf = ''
+        let outBuf = ''
+        let watchdog = null
+        const release = () => {
+          if (cardChildren.get(slot) === child) cardChildren.delete(slot)
+        }
+        cardChildren.set(slot, child)
+
+        const settle = (ok, error) => {
+          if (settled) return
+          settled = true
+          if (watchdog) { try { clearTimeout(watchdog) } catch (e) { /* ignore */ } }
+          lastCard = { at: Date.now(), ok: ok, error: ok ? '' : String(error || 'unknown') }
+          if (!ok) {
+            console.warn('[dsh-task-toast] 独立卡片未显示（' + error + '），通知转回应用内呈现')
+            if (stderrBuf) console.warn('[dsh-task-toast] 卡片 stderr：' + stderrBuf.slice(-600))
+            cardItems.delete(id)
+            try { child.kill() } catch (e) { /* ignore */ }
+          } else {
+            console.log('[dsh-task-toast] 独立卡片已显示 #' + cardSeq + '（slot ' + slot + '，' + cardTimeoutMs() + 'ms 后自动消失）')
+          }
+          resolve({ ok: ok, error: ok ? '' : String(error || 'unknown'), stderr: stderrBuf.slice(-300) })
+        }
+
+        // 5 秒没等到「窗口已显示」就判定失败（正常应在 1~2 秒内出现）
+        watchdog = setTimeout(() => {
+          settle(false, 'timeout: 卡片 5 秒内未报告窗口已显示（编译或启动卡住）')
+        }, 5000)
+
+        try {
+          if (child.stderr) child.stderr.on('data', (d) => { stderrBuf += String(d); if (stderrBuf.length > 4000) stderrBuf = stderrBuf.slice(-2000) })
+          if (child.stdout) child.stdout.on('data', (d) => {
+            outBuf += String(d)
+            if (outBuf.indexOf('"stage":"shown"') >= 0) { release(); settle(true, '') }
+          })
+        } catch (e) { /* ignore */ }
+
+        child.on('error', (e) => settle(false, 'spawn error: ' + ((e && e.message) || e)))
+        child.on('close', (code) => {
+          release()
+          if (!settled) {
+            const tail = stderrBuf ? ' · ' + stderrBuf.slice(-160).replace(/\s+/g, ' ') : ''
+            settle(false, '进程提前退出 code=' + code + '（耗时 ' + (Date.now() - startedAt) + 'ms）' + tail)
+          }
+        })
+      })
     }
 
     /** 关闭全部卡片（停止插件 / 关闭功能时调用，避免残留窗口）。 */
@@ -632,22 +648,8 @@ export default {
       } catch (e) { /* ignore */ }
     }
 
-    /**
-     * 把一条通知投递出去：入队（供页面长轮询）+ 按配置的方式呈现在应用外
-     * （独立卡片 / 抬窗口 / 不呈现）。
-     */
-    function pushItem(item) {
-      const mode = topmostMode()
-      let carded = false
-      if (mode === 'card') {
-        carded = showCard(item)
-        // 卡片已经弹出时，页面里不再重复渲染同一条，避免「两个通知」
-        if (carded) item.silent = true
-        else holdTopmost()
-      } else if (mode === 'window') {
-        holdTopmost()
-      }
-
+    /** 把一条通知放进长轮询队列并唤醒所有挂起的等待者（页面随即渲染）。 */
+    function enqueueVisible(item) {
       queue.push(item)
       if (queue.length > MAX_QUEUE) queue.shift()
       while (waiters.length) {
@@ -655,7 +657,25 @@ export default {
         try { if (w.dispose) w.dispose() } catch (e) { /* ignore */ }
         try { w.resolve({ items: [item], seq: seq }) } catch (e) { /* ignore */ }
       }
-      return carded
+    }
+
+    /**
+     * 把一条通知投递出去：
+     *   · card   → 独立卡片呈现；卡片失败时自动转回应用内（通知永不丢失）
+     *   · window → 抬 dsh 窗口 + 应用内呈现
+     *   · off    → 仅应用内呈现
+     */
+    function pushItem(item) {
+      const mode = topmostMode()
+      if (mode === 'card') {
+        spawnCard(item).then((r) => {
+          if (!r || !r.ok) { enqueueVisible(item); holdTopmost() }
+        }).catch(() => { enqueueVisible(item); holdTopmost() })
+        return { mode: mode, carded: null } // carded 由 spawnCard 异步决定
+      }
+      if (mode === 'window') holdTopmost()
+      enqueueVisible(item)
+      return { mode: mode, carded: false }
     }
 
     /** 入队一条通知（已按配置过滤），并唤醒所有挂起的长轮询等待者。 */
@@ -750,7 +770,7 @@ export default {
       safeRegister('/test', {
         kind: 'exact',
         path: '/dsh-task-toast/test',
-        handler: (req, res) => {
+        handler: async (req, res) => {
           if (req.method !== 'POST') { sendJson(res, 405, { ok: false }); return }
           const t = i18n(config)
           const item = {
@@ -760,8 +780,19 @@ export default {
             title: t.testTitle,
             body: t.testBody,
           }
-          const carded = pushItem(item)
-          sendJson(res, 200, { ok: true, carded: carded, mode: topmostMode(), cardSupported: cardSupported() })
+          const mode = topmostMode()
+          if (mode === 'card') {
+            // 等卡片真正「窗口已显示」再答复，失败时把原因带回给页面
+            const r = await spawnCard(item)
+            sendJson(res, 200, {
+              ok: true, mode: mode, carded: r.ok, cardSupported: cardSupported(),
+              error: r.error || undefined, stderr: r.stderr || undefined,
+            })
+            return
+          }
+          if (mode === 'window') holdTopmost()
+          enqueueVisible(item)
+          sendJson(res, 200, { ok: true, mode: mode, carded: false, cardSupported: cardSupported() })
         },
       })
 
@@ -809,7 +840,7 @@ export default {
         path: '/dsh-task-toast/version',
         handler: (req, res) => {
           if (req.method !== 'GET') { sendJson(res, 405, { ok: false }); return }
-          sendJson(res, 200, Object.assign({ ok: true, updateCmd: currentUpdateCmd(), profile: resolveProfile(), repo: REPO, mode: topmostMode(), cardSupported: cardSupported(), cardSelfTest: cardSelfTest }, updateState))
+          sendJson(res, 200, Object.assign({ ok: true, updateCmd: currentUpdateCmd(), profile: resolveProfile(), repo: REPO, mode: topmostMode(), cardSupported: cardSupported(), cardSelfTest: cardSelfTest, lastCard: lastCard }, updateState))
         },
       })
 
@@ -849,18 +880,18 @@ export default {
             return
           }
           if (action === 'probe') {
-            // 探针：卡片模式下弹一张示例卡片；窗口模式下抬 3 秒后自动还原
+            // 探针：卡片模式下弹一张示例卡片并等结果；窗口模式下抬 3 秒后自动还原
             if (topmostMode() === 'card') {
               if (!cardSupported()) { sendJson(res, 200, { ok: false, mode: 'card', error: 'card script unavailable' }); return }
               const t = i18n(config)
-              const ok = showCard({
+              const r = await spawnCard({
                 seq: ++seq,
                 category: 'test',
                 sessionId: null,
                 title: t.testTitle,
                 body: t.cardProbeBody,
               })
-              sendJson(res, 200, { ok: ok, mode: 'card', action: 'probe' })
+              sendJson(res, 200, { ok: r.ok, mode: 'card', action: 'probe', error: r.error || undefined, stderr: r.stderr || undefined })
               return
             }
             const rp = await runTopmost('topmost', 3000)
@@ -931,14 +962,14 @@ export default {
           }
           if (!cardSupported()) { sendJson(res, 200, { ok: false, error: 'card script unavailable' }); return }
           const t = i18n(config)
-          const ok = showCard({
+          const r = await spawnCard({
             seq: ++seq,
             category: 'test',
             sessionId: null,
             title: t.testTitle,
             body: t.cardProbeBody,
           })
-          sendJson(res, 200, { ok: ok, mode: topmostMode() })
+          sendJson(res, 200, { ok: r.ok, mode: topmostMode(), error: r.error || undefined, stderr: r.stderr || undefined })
         },
       })
 

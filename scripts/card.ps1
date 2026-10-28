@@ -219,8 +219,9 @@ namespace DshToast
                 cLine = Color.FromArgb(58, 58, 62);
                 cGhost = Color.FromArgb(250, 250, 252);
                 cGhostHover = Color.FromArgb(56, 56, 60);
-                cAccent = Color.FromArgb(a.AccentArgb);
-                cIconFg = Color.White;
+                // 单色方案：主按钮 / 图标 = 近白，勾 = 深色（不再使用皮肤强调色）
+                cAccent = Color.FromArgb(245, 245, 247);
+                cIconFg = Color.FromArgb(30, 30, 32);
             }
             else
             {
@@ -230,7 +231,8 @@ namespace DshToast
                 cLine = Color.FromArgb(226, 226, 232);
                 cGhost = Color.FromArgb(28, 28, 30);
                 cGhostHover = Color.FromArgb(236, 236, 241);
-                cAccent = Color.FromArgb(a.AccentArgb);
+                // 单色方案：主按钮 / 图标 = 近黑，勾 = 白色
+                cAccent = Color.FromArgb(28, 28, 30);
                 cIconFg = Color.White;
             }
 
@@ -488,9 +490,10 @@ namespace DshToast
             {
                 if (primary)
                 {
+                    // 单色方案：近白（深色）/ 近黑（浅色），悬停轻微变化
                     Color fill = cAccent;
-                    if (isHover) fill = Lighten(cAccent, A.Dark ? 0.12f : -0.06f);
-                    if (pressed == 0 && isHover) fill = Lighten(cAccent, -0.12f);
+                    if (isHover) fill = A.Dark ? Color.FromArgb(228, 228, 232) : Color.FromArgb(56, 56, 60);
+                    if (pressed == 0 && isHover) fill = A.Dark ? Color.FromArgb(210, 210, 216) : Color.FromArgb(76, 76, 82);
                     using (SolidBrush b = new SolidBrush(fill))
                     {
                         g.FillPath(b, p);
@@ -728,6 +731,11 @@ $a.CallbackUrl = $CallbackUrl
 $a.Id = $Id
 
 $form = New-Object -TypeName DshToast.CardForm -ArgumentList (,$a)
+
+# 窗口真正显示后向 Host 回报一行 stdout —— Host 以此判定「卡片可用」，
+# 超时未回报（编译失败 / 启动异常）就会把通知转回应用内呈现，不会静默丢通知。
+$form.Add_Shown({ [Console]::Out.WriteLine('{"stage":"shown"}') })
+
 try {
   [System.Windows.Forms.Application]::Run($form)
 } finally {
