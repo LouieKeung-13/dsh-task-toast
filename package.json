@@ -1,6 +1,6 @@
 {
   "name": "dsh-task-toast",
-  "version": "1.4.2",
+  "version": "1.5.0",
   "description": "DSH task-completion notification overlay: four-corner dockable toast, bilingual UI (zh/en), Apple-style glass, and built-in update checker with one-click reinstall.",
   "type": "module",
   "main": "lib/index.js",

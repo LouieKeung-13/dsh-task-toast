@@ -2,7 +2,8 @@
 
 [中文文档](./README.zh.md)
 
-When a task finishes inside dsh, a corner-docked toast slides in with
+When a task finishes inside dsh, a **standalone floating card** (or an in-app
+toast) appears in a corner of the screen with
 **View result / Later / Dismiss** actions. The dock corner (all four), the UI language (中文 / English),
 and the click behavior (navigate to session vs. expand in place) are all
 configurable from a settings panel.
@@ -31,11 +32,14 @@ configurable from a settings panel.
   primary action with dsh's own `--dsw-alias-brand-primary`.
 - **Broad completion coverage** — sub-agent end, background job done, workflow
   child-agent end, and top-level session `running → idle` transitions.
-- **Always on top (cross-application)** — when running inside the dsh **desktop
-  client** (Electron), the window is raised above **every other application** the
-  moment a notification arrives, then restored automatically. Implemented with
-  `SetWindowPos(HWND_TOPMOST)` via a tiny PowerShell helper, so the overlay keeps
-  its glassmorphism styling instead of degrading to a system notification.
+- **Always on top (cross-application), two flavours)**
+  - `Standalone floating card` (default): spawns a **borderless window detached
+    from dsh** — one corner of the screen, genuinely `TopMost` above every app,
+    with DWM acrylic blur, rounded corners and a soft shadow. It does **not steal
+    focus**, so you can keep typing elsewhere. Multiple cards stack vertically.
+  - `Raise the dsh window`: lifts the whole dsh window to the front (the previous
+    behaviour), handy when you want to jump straight back into dsh.
+  - Both are Windows desktop-client only; web/CLI mode skips them.
 - **Built-in update checker** — the Host polls the upstream GitHub release on
   startup and every 6 hours. When a newer version exists, a toast with an
   **Update** button appears, and Settings → Task notifications offers
@@ -68,37 +72,46 @@ dsh plugins follow a **Host + Client** split. This plugin is shipped as a
 
 | Half | File (source → artifact) | Runtime | Responsibility |
 | --- | --- | --- | --- |
-| Host | `src/static/host.js` → `lib/index.js` | Node | Event subscription, queueing, HTTP channel (`state` / `config` / `poll` / `test` / `active` / `version` / `check-update` / `update` / `topmost`), upstream release polling, window elevation. |
+| Host | `src/static/host.js` → `lib/index.js` | Node | Event subscription, queueing, HTTP channel (`state` / `config` / `poll` / `test` / `active` / `version` / `check-update` / `update` / `topmost` / `card` / `card-action`), upstream release polling, card spawning and window elevation. |
 | Client | `src/static/client.js` → `lib/client.js` | WebView | Long-poll consumer, overlay UI, settings panel, update panel. Injected via `window.__ModuleLoader__`. |
+| Card | `scripts/card.ps1` | WinForms | Standalone borderless always-on-top card (acrylic blur + rounded corners + three actions); posts the clicked action back to the Host. |
 
-### Always on top: how it works (and what it cannot do)
+### How the standalone card works
 
 dsh ships in two shapes: an **Electron desktop client**
 (`D:\...\DeepSeek Harness.exe`, Electron 44) and a plain **web/CLI** mode. Plugin
 code itself runs in a *Node-mode* child process (`ELECTRON_RUN_AS_NODE=1`), which
-does **not** have `BrowserWindow` — so a plugin cannot create its own native
-window. What it *can* do is change the z-order of the already-existing dsh window:
+does **not** have `BrowserWindow` — so a plugin cannot create a native window
+in-process. Instead it **spawns a separate PowerShell + WinForms process**:
 
 ```
-notification ──► Host (Node) ──► powershell -File scripts/topmost.ps1
-                                   └─ EnumWindows → match by process.ppid (Electron main)
-                                      └─ SetWindowPos(hwnd, HWND_TOPMOST, …)
-                                          └─ restore with HWND_NOTOPMOST after N ms
+notification ──► Host (Node)
+                  └─ spawn powershell -STA -File scripts/card.ps1 -Title … -Position …
+                       ├─ SetWindowCompositionAttribute(ACCENT_ENABLE_ACRYLICBLURBEHIND)  ← acrylic
+                       ├─ DwmSetWindowAttribute(WINDOW_CORNER_PREFERENCE = ROUND)         ← Win11 corners
+                       ├─ FormBorderStyle=None + TopMost=true                            ← borderless, topmost
+                       └─ click → POST /dsh-task-toast/card-action {id, action}
+                            ├─ view   → navigate the page to the session + bring dsh forward
+                            ├─ later  → re-notify in 5 minutes
+                            └─ ignore → drop
 ```
 
-- The window is raised **without stealing focus** (`SWP_NOACTIVATE`), so you can
-  keep typing in another app while the toast is visible on top.
-- It is restored when the toast is dismissed, or after the configured hold time.
-- `process.ppid` is the Electron main process when running as the desktop client.
-  If no window matches, the helper falls back to a window-title match
-  (`matchTitle`, default `DeepSeek`), and if that fails too the whole thing is
-  silently skipped — so web/CLI mode is unaffected.
-- **Windows only** (uses `user32.dll` via PowerShell). On macOS/Linux the toggle
-  is inert.
+- The card lives in its own process, **independent of the dsh window**: it stays
+  visible even when dsh is minimised or covered.
+- Multiple cards stack vertically via `-Slot` (bottom-anchored for the bottom
+  corners) instead of overlapping.
+- **Automatic fallback**: if the script is missing, PowerShell is policy-blocked or
+  compilation fails, the Host notices the child exiting abnormally within 4 s and
+  falls back to raising the dsh window — a notification is never lost.
+- `Raise the dsh window` uses `scripts/topmost.ps1`: `EnumWindows` matches the
+  Electron main window by `process.ppid` (title fallback `matchTitle`), then
+  `SetWindowPos(hwnd, HWND_TOPMOST)` — also without stealing focus
+  (`SWP_NOACTIVATE`).
+- **Windows only** (relies on `user32.dll` / `dwmapi.dll`). macOS/Linux skip it.
 
-> Because the *dsh window itself* is raised, you will see the whole dsh window on
-> top — not a floating mini-card detached from it. That is the trade-off for
-> keeping the frosted-glass overlay instead of a plain OS notification.
+> The card is a native WinForms window approximating frosted glass with DWM acrylic
+> plus rounded corners — it is not the same as macOS `backdrop-filter`. The in-app
+> overlay keeps the full glassmorphism treatment.
 
 `package.json` declares both `dsh.bundle.patch` (host registration via
 `cordis.patch.yml`) **and** `dsh.client` (the Web client bundle + injected
@@ -176,6 +189,13 @@ dsh plugin --profile web add github:LouieKeung-13/dsh-task-toast
 
 ### Changelog
 
+- **v1.5.0** — **standalone floating card**: adds `scripts/card.ps1`
+  (PowerShell + WinForms) which spawns a borderless always-on-top window truly
+  detached from dsh (DWM acrylic blur, rounded corners, shadow, no focus stealing,
+  vertical stacking, `/card-action` button callback). The old topmost toggle
+  becomes a three-way **Notification surface** setting (card / raise window / off)
+  plus a **Test card** button. If the card cannot start, it falls back to raising
+  the window so no notification is lost.
 - **v1.4.0** — always-on-top: while a toast is visible, the dsh desktop window is
   raised above every other app (`SetWindowPos` + `HWND_TOPMOST` through a
   PowerShell helper, no focus stealing) and restored afterwards. Settings gained
@@ -193,9 +213,9 @@ dsh plugin --profile web add github:LouieKeung-13/dsh-task-toast
 
 ### Verify
 
-Open dsh → **Settings → Task notifications**, then click **Send test
-notification** to confirm the overlay appears in the chosen corner. The settings
-page now also shows a **Host status** row:
+Open dsh → **Settings → Task notifications**, then click **Test card** (or
+**Send test notification**) to confirm the card appears in the chosen corner and
+floats above every window. The settings page also shows a **Host status** row:
 
 - `Host connected` — routes are live; real task-completion notifications work.
 - `Host unreachable` — the Host half did not mount (see Troubleshooting).
@@ -221,7 +241,10 @@ This almost always means the **Host half is not mounted**, even though the Clien
    HTTP routes are not responding.
 4. **Check the dsh process log / terminal** for:
    - `[dsh-task-toast] host apply() 开始执行…` → Host plugin loaded.
-   - `[dsh-task-toast] host 已挂载：9 条 HTTP 路由…` → routes registered (good).
+   - `[dsh-task-toast] host 已挂载：11 条 HTTP 路由…` → routes registered (good).
+   - `[dsh-task-toast] 通知呈现方式 = card…卡片脚本可用 = true` → card support is ready.
+   - `[dsh-task-toast] 独立卡片不可用（exit 1），回退到窗口置顶` → the card script
+     failed on your machine; the following `卡片 stderr` line holds the reason.
    - `[dsh-task-toast] FATAL: ctx.webServer 不可用…` → your dsh version does not
      expose `webServer`; the plugin cannot serve HTTP (a code change is needed).
 5. **The test button falls back to a local preview** if the Host is unreachable,
@@ -248,9 +271,9 @@ This almost always means the **Host half is not mounted**, even though the Clien
 | Auto-dismiss (seconds) | 0 = never auto-close; otherwise the toast closes after N seconds. |
 | Task completed / Error level | `off` / `In-app toast` (default for task) / `System notification`. |
 | Plugin update alerts | Level for the built-in update notification (`In-app toast` by default). |
-| Float above all apps | Raise the dsh desktop window above every other app while a toast is visible (desktop client, Windows). |
-| Hold for (seconds) | How long the window stays on top; 0 = toast lifetime + 1.5 s. |
-| Test topmost | Raises the window for 3 seconds and restores it, to verify the feature. |
+| Notification surface | `Standalone floating card` (default) / `Raise the dsh window` / `Off (in-app only)`. |
+| Card lifetime (seconds) | How long the card stays on screen; also the topmost hold time. Hovering over it pauses the countdown. |
+| Test card / Test topmost | In card mode, shows a sample card; in window mode, raises the window for 3 s and restores it. |
 | Send test notification | Pushes a sample toast to verify the pipeline. |
 | Check automatically | Poll the upstream release on startup and every 6 hours. |
 | Check now | Force an immediate update check and show installed vs. latest. |

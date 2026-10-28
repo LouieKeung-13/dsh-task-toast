@@ -118,15 +118,17 @@ const expected = [
   '/dsh-task-toast/check-update',
   '/dsh-task-toast/update',
   '/dsh-task-toast/topmost',
+  '/dsh-task-toast/card',
+  '/dsh-task-toast/card-action',
 ]
 for (const p of expected) assert.ok(ctx.routes[p], '缺少路由 ' + p)
 console.log('✓ 路由注册完整（' + expected.length + ' 条）')
 
-// 测试期间关闭置顶：避免自动检查推送通知时真的把用户窗口抬起来
-const reqCfg = makeReq('POST', '/dsh-task-toast/config', JSON.stringify({ config: { topmost: { enabled: false } } }))
+// 测试期间关闭应用外呈现（mode=off）：避免自动检查推送通知时真的弹卡片 / 抬窗口
+const reqCfg = makeReq('POST', '/dsh-task-toast/config', JSON.stringify({ config: { topmost: { mode: 'off' } } }))
 const resCfg = makeRes()
 await ctx.routes['/dsh-task-toast/config'].handler(reqCfg, resCfg)
-assert.equal(JSON.parse(resCfg._r.body).config.topmost.enabled, false, '测试前置：置顶应已关闭')
+assert.equal(JSON.parse(resCfg._r.body).config.topmost.mode, 'off', '测试前置：应用外呈现应已关闭')
 
 // ================= 2) 本地版本 =================
 const PKG_VERSION = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version
@@ -209,21 +211,49 @@ if (hasDsh) {
   console.log('✓ /update 无 dsh CLI 时优雅失败并返回日志（removeCode=' + up.removeCode + ', addCode=' + up.addCode + '）')
 }
 
-// ================= 6) 置顶配置与路由（不触发真实窗口操作） =================
+// ================= 6) 呈现方式 / 置顶 / 卡片（不触发真实窗口操作） =================
 const { normalizeConfig, DEFAULT_CONFIG } = await import(pathToFileURL(join(root, 'lib/config.js')).href)
 assert.deepEqual(normalizeConfig({}).topmost, DEFAULT_CONFIG.topmost, 'topmost 默认值应被补齐')
-assert.equal(normalizeConfig({ topmost: { enabled: false } }).topmost.enabled, false)
+assert.equal(normalizeConfig({}).topmost.mode, 'card', '默认应为独立卡片')
+assert.equal(normalizeConfig({ topmost: { mode: 'window' } }).topmost.mode, 'window')
+assert.equal(normalizeConfig({ topmost: { enabled: false } }).topmost.mode, 'off', '旧配置 enabled=false 应映射为 off')
+assert.equal(normalizeConfig({ topmost: { mode: 'bogus' } }).topmost.mode, 'card', '非法 mode 应回落 card')
 assert.equal(normalizeConfig({ topmost: { durationMs: 999999 } }).topmost.durationMs, 120000, 'durationMs 应被 clamp 到 120s')
 assert.equal(normalizeConfig({ topmost: { durationMs: -5 } }).topmost.durationMs, 0)
+assert.equal(normalizeConfig({ accent: '#ff0000' }).accent, '#ff0000')
+assert.equal(normalizeConfig({ accent: 'red!' }).accent, '', '非法强调色应被清空')
+
 // 用 action=restore 调用（不触发真实窗口置顶，避免影响正在使用的桌面）
 const reqT = makeReq('POST', '/dsh-task-toast/topmost', JSON.stringify({ action: 'restore' }))
 const resT = makeRes()
 await ctx.routes['/dsh-task-toast/topmost'].handler(reqT, resT)
 const r0 = JSON.parse(resT._r.body)
 assert.equal(r0.ok, true)
-console.log('✓ 置顶配置归一化正确，/topmost 路由可用')
+console.log('✓ 呈现方式归一化正确（card / window / off），/topmost 路由可用')
 
-// ================= 7) dispose 清理 =================for (const d of ctx.disposers) { try { d() } catch (e) { /* ignore */ } }
+// /card 只测 close-all，绝不真的弹窗
+const reqC = makeReq('POST', '/dsh-task-toast/card', JSON.stringify({ action: 'close-all' }))
+const resC = makeRes()
+await ctx.routes['/dsh-task-toast/card'].handler(reqC, resC)
+assert.equal(JSON.parse(resC._r.body).ok, true)
+console.log('✓ /card close-all 可用（未弹出任何窗口）')
+
+// /card-action 走 ignore 分支：不跳转、不排定重提醒
+const reqA = makeReq('POST', '/dsh-task-toast/card-action', JSON.stringify({ id: '999', action: 'ignore' }))
+const resA = makeRes()
+await ctx.routes['/dsh-task-toast/card-action'].handler(reqA, resA)
+assert.equal(JSON.parse(resA._r.body).ok, true)
+console.log('✓ /card-action 回调可用')
+
+// 卡片模式下 /test 会真的 spawn 窗口 —— 这里 mode=off，只校验返回值语义
+const rt = await callRoute(ctx.routes, '/dsh-task-toast/test', 'POST')
+assert.equal(rt.ok, true)
+assert.equal(rt.mode, 'off')
+assert.equal(rt.carded, false, 'mode=off 时不应弹卡片')
+console.log('✓ /test 在 off 模式下不入卡片队列')
+
+// ================= 7) dispose 清理 =================
+for (const d of ctx.disposers) { try { d() } catch (e) { /* ignore */ } }
 console.log('✓ dispose 正常')
 
 // ================= 7) 中英文案 key 必须一一对应 =================

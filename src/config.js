@@ -7,7 +7,7 @@
 // ctx / React / host 等宿主符号）。
 
 /** 插件版本（与 package.json 保持同步；Host 侧会优先读真实 package.json）。 */
-export const VERSION = '1.4.2'
+export const VERSION = '1.5.0'
 
 /** 上游仓库 owner/repo —— 更新检查与更新命令都基于它。 */
 export const REPO = 'LouieKeung-13/dsh-task-toast'
@@ -46,6 +46,14 @@ export const THEMES = [
 ]
 export const THEME_IDS = THEMES.map((t) => t.id)
 
+/** 置顶/卡片落地方式。 */
+export const TOPMOST_MODES = [
+  { id: 'card', zh: '独立置顶小卡片', en: 'Standalone floating card' },
+  { id: 'window', zh: '提升 dsh 窗口', en: 'Raise the dsh window' },
+  { id: 'off', zh: '关闭（仅应用内）', en: 'Off (in-app only)' },
+]
+export const TOPMOST_MODE_IDS = TOPMOST_MODES.map((m) => m.id)
+
 /** 通知分类：task = 任务完成；error = 错误失败；update = 插件自身有新版本。 */
 export const CATEGORIES = [
   { id: 'task', zh: '任务完成', en: 'Task completed', def: 'app' },
@@ -83,13 +91,16 @@ export const DEFAULT_CONFIG = {
   updateIntervalHours: 6,   // 自动检查间隔（小时）
   profile: '',              // 更新命令作用的 dsh profile；留空 = 从插件安装路径自动识别
   // ---- 置顶（跨应用） ----
-  // 通知弹出时把 dsh 客户端窗口抬到「所有应用之上」，结束后自动恢复。
-  // 仅在 dsh 桌面客户端（Electron）下生效；网页/CLI 模式下找不到窗口会静默跳过。
+  // mode = card   ：弹出**独立的无边框小卡片**（WinForms 原生窗口，真·置顶、不抢焦点）
+  // mode = window ：把 dsh 主窗口整体抬到所有应用之上（旧行为）
+  // mode = off    ：不出现在应用外，只保留应用内浮层
   topmost: {
-    enabled: true,
-    durationMs: 10000,      // 置顶保持时长（ms），0 = 用 toast 的自动消失时长
+    mode: 'card',
+    enabled: true,          // 兼容字段，等价于 mode !== 'off'
+    durationMs: 12000,      // 卡片自动消失 / 置顶保持时长（ms），0 = 跟随 toast
     matchTitle: 'DeepSeek', // 按 PID 找不到窗口时的兜底匹配（窗口标题包含）
   },
+  accent: '',               // 卡片强调色（#RRGGBB）；空 = 用默认蓝，followAccent 时由页面回传
 }
 
 /** 生成更新命令（两行，兼容不识别 `&&` 的 shell）。profile 省略时用 web。 */
@@ -125,8 +136,13 @@ export function sanitizeLevel(v) {
 export function normalizeTopmost(input) {
   const src = input && typeof input === 'object' ? input : {}
   const d = DEFAULT_CONFIG.topmost
+  let mode
+  if (TOPMOST_MODE_IDS.indexOf(src.mode) >= 0) mode = src.mode
+  else if (src.enabled === false) mode = 'off'
+  else mode = d.mode
   return {
-    enabled: src.enabled === undefined ? d.enabled : src.enabled !== false,
+    mode: mode,
+    enabled: mode !== 'off',
     durationMs:
       typeof src.durationMs === 'number'
         ? Math.max(0, Math.min(120000, src.durationMs | 0))
@@ -171,6 +187,9 @@ export function normalizeConfig(input) {
         ? Math.max(1, Math.min(72, src.updateIntervalHours | 0))
         : DEFAULT_CONFIG.updateIntervalHours,
     topmost: normalizeTopmost(src.topmost),
+    accent: typeof src.accent === 'string' && /^#[0-9a-fA-F]{6}$/.test(src.accent.trim())
+      ? src.accent.trim()
+      : DEFAULT_CONFIG.accent,
     profile: typeof src.profile === 'string' ? src.profile.trim().slice(0, 40) : DEFAULT_CONFIG.profile,
     categories: cats,
   }

@@ -32,6 +32,7 @@ const api = {
   checkUpdate: () => fetchJson('/check-update', { method: 'POST' }),
   update: () => fetchJson('/update', { method: 'POST' }),
   topmost: (action) => fetchJson('/topmost', { method: 'POST', body: JSON.stringify({ action: action }) }),
+  card: (action) => fetchJson('/card', { method: 'POST', body: JSON.stringify({ action: action }) }),
 }
 
 // 本地兜底用的更新命令（Host 不可达时「复制更新命令」仍可用）。
@@ -83,14 +84,21 @@ function ui(locale) {
     releasePage: '发布页',
     updateBtn: '更新',
     hostNeeded: '更新功能需要 Host 已连接（若未连接请彻底重启 dsh）',
-    // ---- 置顶 ----
-    topmost: '浮在所有应用之上（置顶）',
-    topmostHint: '通知出现时把 dsh 窗口抬到最上层，结束后自动恢复。仅 dsh 桌面客户端支持；网页/CLI 模式下自动跳过。',
-    topmostDuration: '置顶保持（秒）',
+    // ---- 置顶 / 独立卡片 ----
+    topmost: '通知呈现方式',
+    modeCard: '独立置顶小卡片',
+    modeWindow: '提升 dsh 窗口',
+    modeOff: '关闭（仅应用内）',
+    topmostHint: '「独立小卡片」会创建一个脱离 dsh 的无边框浮窗，只占屏幕一角、压在所有应用之上、不抢焦点；「提升 dsh 窗口」则把整个 dsh 窗口顶到最前面。仅 Windows 桌面客户端支持。',
+    topmostDuration: '卡片停留（秒）',
     topmostTest: '测试置顶',
     topmostOk: '已置顶，3 秒后自动恢复',
     topmostFail: '置顶未生效（非桌面客户端，或未找到 dsh 窗口）',
     topmostCancel: '已取消置顶',
+    cardTest: '测试卡片',
+    cardOk: '卡片已弹出，请看屏幕角落',
+    cardFail: '卡片未能弹出',
+    cardUnsupported: '当前环境不支持独立卡片（仅 Windows 桌面客户端）',
   }
   const en = {
     settingsTitle: 'Task notifications',
@@ -136,14 +144,21 @@ function ui(locale) {
     releasePage: 'Release page',
     updateBtn: 'Update',
     hostNeeded: 'Update requires the Host process (restart dsh if it is not connected)',
-    // ---- Topmost ----
-    topmost: 'Float above all apps (always on top)',
-    topmostHint: 'Raises the dsh window above every other app when a notification arrives, then restores it. Desktop client only; silently skipped in web/CLI mode.',
-    topmostDuration: 'Hold for (seconds)',
+    // ---- Topmost / standalone card ----
+    topmost: 'Notification surface',
+    modeCard: 'Standalone floating card',
+    modeWindow: 'Raise the dsh window',
+    modeOff: 'Off (in-app only)',
+    topmostHint: '“Standalone card” creates a borderless window detached from dsh — one corner of the screen, above every app, without stealing focus. “Raise the dsh window” brings the whole dsh window to the front instead. Windows desktop client only.',
+    topmostDuration: 'Card lifetime (seconds)',
     topmostTest: 'Test topmost',
     topmostOk: 'Raised on top — restores in 3s',
     topmostFail: 'Topmost did not apply (not the desktop client, or window not found)',
     topmostCancel: 'Topmost released',
+    cardTest: 'Test card',
+    cardOk: 'Card shown — check the screen corner',
+    cardFail: 'Card could not be shown',
+    cardUnsupported: 'Standalone card is unavailable here (Windows desktop client only)',
   }
   return locale === 'en' ? en : zh
 }
@@ -362,6 +377,14 @@ const apply = async (ctx) => {
 
   function handleItems(items) {
     for (const item of items) {
+      if (!item) continue
+      // 独立卡片上的「查看结果」→ 直接跳到对应会话
+      if (item.kind === 'card-view') {
+        if (item.sessionId) openSession(item.sessionId)
+        continue
+      }
+      // 已经由独立卡片呈现过的通知，页面内不再重复渲染（避免一次事件两个通知）
+      if (item.silent) continue
       if (item.category === 'test') { addToast(item, 10000); continue }
       const level = (state.config.categories || {})[item.category]
       if (level === 'off') continue
@@ -454,6 +477,17 @@ const apply = async (ctx) => {
     const themeClass = cfg.theme === 'light' ? ' dsh-tt-theme-light' : cfg.theme === 'dark' ? ' dsh-tt-theme-dark' : ''
     const accent = cfg.followAccent ? readAccent() : ''
     const hostStyle = accent ? { '--dsh-tt-accent': accent } : null
+
+    // 把解析到的 dsh 皮肤主色回传给 Host，让独立卡片用同一个强调色
+    React.useEffect(() => {
+      if (!cfg.followAccent) return
+      const m = /^#?([0-9a-fA-F]{6})$/.exec(String(accent || '').trim())
+      if (!m) return
+      const hex = '#' + m[1].toUpperCase()
+      if (String(state.config.accent || '').toUpperCase() === hex) return
+      state.config = Object.assign({}, state.config, { accent: hex })
+      api.config(state.config).catch(() => { /* ignore */ })
+    }, [accent, cfg.followAccent])
     if (!items.length) return React.createElement('div', { className: 'dsh-tt-host dsh-tt-host--' + cfg.position + themeClass, style: hostStyle })
     const nodes = items.map((toast) => {
       const isUpdate = toast.category === 'update'
@@ -502,6 +536,8 @@ const apply = async (ctx) => {
       const next = Object.assign({}, cfg, {
         categories: Object.assign({}, cfg.categories),
       })
+      // 保留页面回传的强调色（由 ToastStack 依据 dsh 皮肤写入 state.config）
+      if (!next.accent && state.config.accent) next.accent = state.config.accent
       if (patch.enabled !== undefined) next.enabled = patch.enabled
       if (patch.locale !== undefined) next.locale = patch.locale
       if (patch.theme !== undefined) next.theme = patch.theme
@@ -527,6 +563,17 @@ const apply = async (ctx) => {
     const [topmostMsg, setTopmostMsg] = React.useState('')
 
     function doTopmostProbe() {
+      const mode = (cfg.topmost && cfg.topmost.mode) || 'card'
+      if (mode === 'card') {
+        setTopmostMsg(cfg.locale === 'en' ? 'Showing card…' : '正在弹出卡片…')
+        api.card('probe').then((r) => {
+          if (r && r.ok) setTopmostMsg(t.cardOk)
+          else setTopmostMsg(t.cardFail + (r && r.error ? ' · ' + r.error : ''))
+        }).catch((err) => {
+          setTopmostMsg(t.cardFail + ' · ' + ((err && err.message) || String(err)))
+        })
+        return
+      }
       setTopmostMsg(cfg.locale === 'en' ? 'Raising…' : '正在置顶…')
       api.topmost('probe').then((r) => {
         const ok = r && r.ok && (r.windows || 0) > 0
@@ -662,17 +709,20 @@ const apply = async (ctx) => {
       ),
       selectRow(t.position, null, React.createElement('select', { className: 'dsh-tt-select', value: cfg.position, onChange: (e) => update({ position: e.target.value }) }, posOpts)),
 
-      // ---------- 置顶（跨应用最上层） ----------
-      React.createElement('label', { className: 'dsh-tt-check' },
-        React.createElement('input', { type: 'checkbox', checked: !!(cfg.topmost && cfg.topmost.enabled), onChange: (e) => update({ topmost: { enabled: e.target.checked } }) }),
-        ' ' + t.topmost
-      ),
+      // ---------- 通知呈现方式：独立卡片 / 抬 dsh 窗口 / 关闭 ----------
+      selectRow(t.topmost, null, React.createElement('select', {
+        className: 'dsh-tt-select',
+        value: (cfg.topmost && cfg.topmost.mode) || 'card',
+        onChange: (e) => update({ topmost: { mode: e.target.value } }),
+      }, TOPMOST_MODES.map((m) => React.createElement('option', { key: m.id, value: m.id }, cfg.locale === 'en' ? m.en : m.zh)))),
       React.createElement('p', { className: 'dsh-tt-hint' }, t.topmostHint),
-      selectRow(t.topmostDuration, null, React.createElement('input', {
-        className: 'dsh-tt-input', type: 'number', min: '0', max: '120', step: '1', style: { width: '90px' },
-        value: String(Math.round((((cfg.topmost || {}).durationMs) || 0) / 1000)),
-        onChange: (e) => { const v = parseInt(e.target.value, 10); update({ topmost: { durationMs: (isNaN(v) ? 0 : v) * 1000 } }) },
-      })),
+      ((cfg.topmost && cfg.topmost.mode) || 'card') !== 'off'
+        ? selectRow(t.topmostDuration, null, React.createElement('input', {
+          className: 'dsh-tt-input', type: 'number', min: '3', max: '120', step: '1', style: { width: '90px' },
+          value: String(Math.round((((cfg.topmost || {}).durationMs) || 0) / 1000)),
+          onChange: (e) => { const v = parseInt(e.target.value, 10); update({ topmost: { durationMs: (isNaN(v) ? 0 : v) * 1000 } }) },
+        }))
+        : null,
 
       selectRow(t.viewBehavior, null, React.createElement('select', { className: 'dsh-tt-select', value: cfg.viewBehavior, onChange: (e) => update({ viewBehavior: e.target.value }) }, vbOpts)),
       selectRow(t.taskLevel, null, React.createElement('select', { className: 'dsh-tt-select', value: cfg.categories.task, onChange: (e) => update({ category: 'task', level: e.target.value }) }, levelOpts)),
@@ -689,7 +739,8 @@ const apply = async (ctx) => {
       selectRow(t.autoDismiss, null, React.createElement('input', { className: 'dsh-tt-input', type: 'number', min: '0', step: '1', value: String(cfg.autoDismissMs), style: { width: '90px' }, onChange: (e) => { const v = parseInt(e.target.value, 10); update({ autoDismissMs: isNaN(v) ? 0 : v }) } })),
       React.createElement('div', { className: 'dsh-tt-actions-row' },
         React.createElement('button', { className: 'dsh-tt-btn-lg', onClick: () => { sendTest() } }, t.testBtn),
-        React.createElement('button', { className: 'dsh-tt-btn-lg dsh-tt-btn-lg--ghost', onClick: () => doTopmostProbe() }, t.topmostTest)
+        React.createElement('button', { className: 'dsh-tt-btn-lg dsh-tt-btn-lg--ghost', onClick: () => doTopmostProbe() },
+          ((cfg.topmost && cfg.topmost.mode) || 'card') === 'card' ? t.cardTest : t.topmostTest)
       ),
       topmostMsg ? React.createElement('p', { className: 'dsh-tt-hint' }, topmostMsg) : null,
 

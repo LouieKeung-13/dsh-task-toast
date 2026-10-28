@@ -5,9 +5,9 @@
 
 [English documentation](./README.md)
 
-当 dsh 内的任务完成时，会在屏幕角落滑入一张提示卡片，提供
+当 dsh 内的任务完成时，会弹出一张**独立的置顶小卡片**（或应用内浮层），提供
 **查看结果 / 稍后 / 忽略** 三个操作。
-浮层的停靠角落（四角任选）、界面语言（中文 / 英文），以及点击「查看结果」的行为
+卡片的停靠角落（四角任选）、界面语言（中文 / 英文），以及点击「查看结果」的行为
 （跳转到会话 / 浮层内展开）都可在设置面板中配置。
 
 ---
@@ -29,9 +29,12 @@
   为主按钮着色。
 - **广泛的完成事件覆盖** —— 子代理结束、后台任务完成、工作流子任务结束、
   以及顶层会话 `running → idle` 切换。
-- **跨应用置顶** —— 在 dsh **桌面客户端**（Electron）里运行时，通知一出现就把
-  窗口抬到**所有其他应用之上**，到点自动恢复。实现方式是 PowerShell 调用
-  `SetWindowPos(HWND_TOPMOST)`，因此浮层仍是毛玻璃样式，不用退化成系统通知。
+- **跨应用置顶（两种形态）**
+  - `独立置顶小卡片`（默认）：创建一个**脱离 dsh 的无边框浮窗**，只占屏幕一角，
+    真·`TopMost` 压在所有应用之上，窗口本身带亚克力模糊 / 圆角 / 阴影，
+    **不抢焦点**——你可以继续在别的应用里打字。多张卡片会自动竖向堆叠。
+  - `提升 dsh 窗口`：把整个 dsh 主窗口抬到最上层（旧行为），适合希望顺手切回 dsh 的场景。
+  - 两者都仅 Windows 桌面客户端可用，网页 / CLI 模式自动跳过。
 - **内置更新提醒** —— Host 在启动 8 秒后及此后每 6 小时查询上游 GitHub Release
   （可开关）。发现新版本时弹出带「更新」按钮的通知；设置页提供
   **立即检查 / 复制更新命令 / 一键更新**（由 Host 代跑 `dsh plugin remove` + `add`），
@@ -62,32 +65,41 @@ dsh 插件遵循 **Host + Client（宿主 + 客户端）** 分离结构。本插
 
 | 半体 | 文件（源码 → 产物） | 运行时 | 职责 |
 | --- | --- | --- | --- |
-| Host | `src/static/host.js` → `lib/index.js` | Node | 事件订阅、入队、HTTP 通道（`state` / `config` / `poll` / `test` / `active` / `version` / `check-update` / `update` / `topmost`）、上游版本轮询、窗口置顶。 |
+| Host | `src/static/host.js` → `lib/index.js` | Node | 事件订阅、入队、HTTP 通道（`state` / `config` / `poll` / `test` / `active` / `version` / `check-update` / `update` / `topmost` / `card` / `card-action`）、上游版本轮询、卡片 spawn 与窗口置顶。 |
 | Client | `src/static/client.js` → `lib/client.js` | WebView | 长轮询消费、浮层 UI、设置面板、更新面板。通过 `window.__ModuleLoader__` 注入。 |
+| Card | `scripts/card.ps1` | WinForms | 独立的无边框置顶卡片（亚克力模糊 + 圆角 + 三按钮），按钮结果回传 Host。 |
 
-### 置顶是怎么做到的（以及做不到什么）
+### 独立卡片是怎么做到的
 
 dsh 有两种形态：**Electron 桌面客户端**（`D:\...\DeepSeek Harness.exe`，Electron 44）
 和纯 **web / CLI** 模式。插件代码本身跑在 *Node 模式* 子进程里
-（`ELECTRON_RUN_AS_NODE=1`），**拿不到 `BrowserWindow`** —— 所以插件无法自己
-创建原生窗口。它能做的是改变**已经存在的 dsh 窗口**的层级：
+（`ELECTRON_RUN_AS_NODE=1`），**拿不到 `BrowserWindow`** —— 所以插件无法在进程内
+创建原生窗口。于是改为 **spawn 一个独立的 PowerShell + WinForms 进程**：
 
 ```
-通知到达 ──► Host (Node) ──► powershell -File scripts/topmost.ps1
-                               └─ EnumWindows → 按 process.ppid 匹配 Electron 主进程
-                                  └─ SetWindowPos(hwnd, HWND_TOPMOST, …)
-                                      └─ N 毫秒后用 HWND_NOTOPMOST 还原
+通知到达 ──► Host (Node)
+              └─ spawn powershell -STA -File scripts/card.ps1 -Title … -Position …
+                   ├─ SetWindowCompositionAttribute(ACCENT_ENABLE_ACRYLICBLURBEHIND)  ← 亚克力模糊
+                   ├─ DwmSetWindowAttribute(WINDOW_CORNER_PREFERENCE = ROUND)         ← Win11 圆角
+                   ├─ FormBorderStyle=None + TopMost=true                            ← 无边框、真置顶
+                   └─ 按钮点击 → POST /dsh-task-toast/card-action {id, action}
+                        ├─ view   → 页面跳转到会话 + 把 dsh 窗口顶到前面
+                        ├─ later  → 5 分钟后重新提醒
+                        └─ ignore → 丢弃
 ```
 
-- 置顶**不抢焦点**（`SWP_NOACTIVATE`），你可以继续在别的应用里打字，浮层压在最上面。
-- 浮层关掉时立即还原；否则到设定的保持时长后自动还原。
-- 作为桌面客户端运行时，`process.ppid` 就是 Electron 主进程。若按 PID 找不到窗口，
-  会自动按窗口标题兜底匹配（`matchTitle`，默认 `DeepSeek`）；再找不到就静默跳过，
-  web / CLI 模式完全不受影响。
-- **仅 Windows**（通过 PowerShell 调 `user32.dll`）。macOS / Linux 上该开关不生效。
+- 卡片窗口按 `process.ppid` 之外的独立进程创建，**与 dsh 窗口互不影响**：
+  dsh 最小化、被遮挡，卡片照样可见。
+- 多张卡片按 `-Slot` 竖向堆叠（右下角时自下而上），互不重叠。
+- **卡片不可用时自动回退**：脚本缺失、PowerShell 被策略拦截、编译失败等情况下，
+  Host 会在 4 秒内检测到子进程异常退出，改为「提升 dsh 窗口」，保证通知不会丢。
+- 选 `提升 dsh 窗口` 时走 `scripts/topmost.ps1`：`EnumWindows` 按 `process.ppid`
+  定位 Electron 主窗口（找不到则按标题兜底 `matchTitle`），再
+  `SetWindowPos(hwnd, HWND_TOPMOST)`，同样不抢焦点（`SWP_NOACTIVATE`）。
+- **仅 Windows**（依赖 `user32.dll` / `dwmapi.dll`）。macOS / Linux 上自动跳过。
 
-> 因为抬上来的是 **dsh 窗口本体**，你看到的是整个 dsh 窗口浮到最上层，而不是脱离
-> 窗口的独立小卡片。这是「保留毛玻璃浮层」而非「退化成系统通知」的代价。
+> 说明：卡片是原生 WinForms 窗口，用 DWM 亚克力 + 圆角模拟毛玻璃观感，
+> 与 macOS 的 `backdrop-filter` 不是同一套效果；应用内浮层仍保留完整毛玻璃。
 
 `package.json` 同时声明了 `dsh.bundle.patch`（经 `cordis.patch.yml` 注册 Host）
 **和** `dsh.client`（Web 客户端 bundle 及其注入包）——后者正是让 dsh 正确注册
@@ -158,6 +170,11 @@ dsh plugin --profile web add github:LouieKeung-13/dsh-task-toast
 
 ### 版本记录
 
+- **v1.5.0** —— **独立置顶小卡片**：新增 `scripts/card.ps1`（PowerShell + WinForms），
+  生成真正脱离 dsh 窗口的无边框置顶浮窗（DWM 亚克力模糊、圆角、阴影、不抢焦点、
+  多卡堆叠、按钮回调 `/card-action`）。设置页的置顶开关改为「通知呈现方式」
+  三选一（独立卡片 / 提升 dsh 窗口 / 关闭），并新增「测试卡片」。
+  卡片不可用时自动回退到提升窗口，通知不会丢。
 - **v1.4.0** —— 跨应用置顶：浮层显示期间把 dsh 桌面窗口抬到所有应用最上层
   （经 PowerShell 调 `SetWindowPos` + `HWND_TOPMOST`，不抢焦点），结束后自动还原。
   设置页新增开关、保持时长、**测试置顶** 按钮。
@@ -170,8 +187,8 @@ dsh plugin --profile web add github:LouieKeung-13/dsh-task-toast
 
 ### 验证
 
-打开 dsh → **设置 → 任务提示**，点击 **发送测试通知**，确认浮层在所选角落出现。
-设置页现在会显示一行 **Host 连接状态**：
+打开 dsh → **设置 → 任务提示**，点击 **测试卡片**（或 **发送测试通知**），
+确认卡片在所选角落出现、并浮在所有窗口之上。设置页会显示一行 **Host 连接状态**：
 
 - `Host 已连接` —— 路由已就绪，真实任务完成通知可用。
 - `Host 未连接` —— Host 半体未挂载（见下方排障）。
@@ -191,7 +208,10 @@ dsh plugin --profile web add github:LouieKeung-13/dsh-task-toast
    若看到 `长轮询失败（Host 可能未加载/未重启）`，说明 Host HTTP 路由无响应。
 4. **查看 dsh 进程日志 / 终端** 是否有：
    - `[dsh-task-toast] host apply() 开始执行…` → Host 插件已加载。
-   - `[dsh-task-toast] host 已挂载：9 条 HTTP 路由…` → 路由已注册（正常）。
+   - `[dsh-task-toast] host 已挂载：11 条 HTTP 路由…` → 路由已注册（正常）。
+   - `[dsh-task-toast] 通知呈现方式 = card…卡片脚本可用 = true` → 卡片能力已就绪。
+   - `[dsh-task-toast] 独立卡片不可用（exit 1），回退到窗口置顶` → 卡片脚本在
+     你的机器上跑不起来，同一行下面会跟一段 `卡片 stderr`，把那段贴给我即可定位。
    - `[dsh-task-toast] FATAL: ctx.webServer 不可用…` → 你的 dsh 版本未提供
      `webServer`，插件无法提供 HTTP（需要改代码适配）。
 5. **测试按钮在 Host 不可达时会本地兜底弹窗**，所以出现「测试通知（本地预览）」
@@ -216,9 +236,9 @@ dsh plugin --profile web add github:LouieKeung-13/dsh-task-toast
 | 自动消失（秒） | 0 = 不自动关闭；否则 N 秒后自动消失。 |
 | 任务完成 / 错误 级别 | `关闭` / `应用内提示`（任务默认）/ `系统通知`。 |
 | 插件更新提醒 | 内置更新通知的级别（默认「应用内提示」）。 |
-| 浮在所有应用之上（置顶） | 通知出现时把 dsh 桌面窗口抬到所有应用之上（桌面客户端 + Windows）。 |
-| 置顶保持（秒） | 保持置顶的时长；0 = 跟随浮层存活时长 + 1.5 秒。 |
-| 测试置顶 | 置顶 3 秒后自动恢复，用于验证该能力是否可用。 |
+| 通知呈现方式 | `独立置顶小卡片`（默认）/ `提升 dsh 窗口` / `关闭（仅应用内）`。 |
+| 卡片停留（秒） | 卡片自动消失的时长，同时是窗口置顶的保持时长。鼠标悬停其上时暂停倒计时。 |
+| 测试置顶 / 测试卡片 | 卡片模式下弹一张示例卡片；窗口模式下置顶 3 秒后自动恢复。 |
 | 发送测试通知 | 推送一条示例通知以验证链路。 |
 | 自动检查更新 | 启动时及此后每 6 小时查询上游 Release。 |
 | 立即检查 | 立刻查一次上游，并显示当前版本 / 最新版本。 |
