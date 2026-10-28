@@ -22,6 +22,13 @@ configurable from a settings panel.
     the overlay without leaving the current view (a `Copy result` button appears).
 - **Bilingual UI** — 中文（简体） / English; the overlay and settings chrome, as
   well as the host-generated titles/bodies, follow a single language setting.
+- **Apple-style glassmorphism** — frosted, translucent cards with
+  `backdrop-filter: blur + saturate`, soft layered shadows and a springy slide-in,
+  replacing the flat "AI-ish" look. All colors use explicit fallbacks so the
+  overlay never renders blank even if dsh's CSS variables are unavailable.
+- **Adaptive theme** — `System` (follows `prefers-color-scheme`) / `Light` /
+  `Dark`, plus an optional **Match dsh skin accent** toggle that tints the
+  primary action with dsh's own `--dsw-alias-brand-primary`.
 - **Broad completion coverage** — sub-agent end, background job done, workflow
   child-agent end, and top-level session `running → idle` transitions.
 - **Zero source patching** — communicates via a host-exposed HTTP channel and
@@ -138,6 +145,8 @@ This almost always means the **Host half is not mounted**, even though the Clien
 | --- | --- |
 | Enable task notifications | Master switch. |
 | UI language | 中文（简体） / English — localizes all overlay and settings chrome. |
+| Theme | System / Light / Dark — controls the glassmorphism palette. |
+| Match dsh skin accent | Tints the primary button with dsh's `--dsw-alias-brand-primary`. |
 | Overlay position | Top-left / Top-right / Bottom-left / Bottom-right. |
 | "View result" behavior | Navigate to session / Expand content in overlay. |
 | Show result summary | Whether the toast renders the result text. |

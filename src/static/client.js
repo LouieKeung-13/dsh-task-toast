@@ -37,6 +37,8 @@ function ui(locale) {
     settingsHint: '任务完成时，在所选角落弹出提示窗口，可查看结果、稍后处理或忽略。设置仅作用于本机当前安装。',
     enable: '启用任务提示',
     language: '界面语言',
+    theme: '主题',
+    followAccent: '跟随 dsh 皮肤主题色',
     position: '弹出位置',
     viewBehavior: '「查看结果」行为',
     showSummary: '显示结果摘要',
@@ -59,6 +61,8 @@ function ui(locale) {
     settingsHint: 'When a task finishes, a prompt appears in the chosen corner. You can view the result, snooze, or dismiss it. Settings apply to this local install only.',
     enable: 'Enable task notifications',
     language: 'UI language',
+    theme: 'Theme',
+    followAccent: 'Match dsh skin accent',
     position: 'Overlay position',
     viewBehavior: '"View result" behavior',
     showSummary: 'Show result summary',
@@ -88,38 +92,105 @@ function injectCss() {
   tag.dataset.plugin = 'dsh-task-toast'
   tag.dataset.pluginCss = tagId
   tag.textContent = `
-.dsh-tt-host { position: fixed; z-index: 9999; display: flex; flex-direction: column; gap: 10px; width: 340px; max-width: calc(100vw - 24px); pointer-events: none; }
-.dsh-tt-host--top-left { top: 16px; left: 16px; }
-.dsh-tt-host--top-right { top: 16px; right: 16px; }
-.dsh-tt-host--bottom-left { bottom: 16px; left: 16px; }
-.dsh-tt-host--bottom-right { bottom: 16px; right: 16px; }
-.dsh-tt-toast { position: relative; pointer-events: auto; display: flex; flex-direction: column; gap: 6px; padding: 12px 56px 12px 14px; border-radius: 12px; background: var(--dsw-alias-bg-overlay); border: 1px solid var(--dsw-alias-border-l1); box-shadow: 0 8px 28px rgba(0,0,0,0.22); color: var(--dsw-alias-label-primary); animation: dsh-tt-in 0.22s ease-out; }
-@keyframes dsh-tt-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
-.dsh-tt-toast:hover { border-color: var(--dsw-alias-border-l2); }
-.dsh-tt-task { border-left: 3px solid var(--dsw-alias-state-success-primary); }
-.dsh-tt-error { border-left: 3px solid var(--dsw-alias-state-error-primary); }
-.dsh-tt-test { border-left: 3px solid var(--dsw-alias-brand-primary); }
-.dsh-tt-title { font-weight: 600; font-size: 13px; line-height: 1.35; }
-.dsh-tt-body { font-size: 12px; color: var(--dsw-alias-label-secondary); overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; word-break: break-all; }
+/* ===== Apple 风格毛玻璃（glassmorphism） ===== */
+/* 所有颜色均带显式兜底，不依赖 dsh 未定义的 CSS 变量，避免出现空白按钮 */
+.dsh-tt-host { position: fixed; z-index: 9999; display: flex; flex-direction: column; gap: 12px; width: 340px; max-width: calc(100vw - 24px); pointer-events: none; font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
+.dsh-tt-host--top-left { top: 18px; left: 18px; }
+.dsh-tt-host--top-right { top: 18px; right: 18px; }
+.dsh-tt-host--bottom-left { bottom: 18px; left: 18px; }
+.dsh-tt-host--bottom-right { bottom: 18px; right: 18px; }
+
+/* 默认（浅色玻璃） */
+.dsh-tt-toast {
+  --tt-accent: var(--dsh-tt-accent, #007AFF);
+  position: relative; pointer-events: auto;
+  display: flex; flex-direction: column; gap: 7px;
+  padding: 14px 52px 14px 16px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.55);
+  -webkit-backdrop-filter: blur(22px) saturate(180%);
+  backdrop-filter: blur(22px) saturate(180%);
+  border: 1px solid rgba(255, 255, 255, 0.45);
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.16), inset 0 1px 0 rgba(255, 255, 255, 0.6);
+  color: rgba(28, 28, 30, 0.92);
+  animation: dsh-tt-in 0.34s cubic-bezier(0.22, 1, 0.36, 1);
+}
+@keyframes dsh-tt-in { from { opacity: 0; transform: translateY(12px) scale(0.98); } to { opacity: 1; transform: none; } }
+
+/* 深色玻璃 */
+.dsh-tt-theme-dark .dsh-tt-toast {
+  --tt-accent: var(--dsh-tt-accent, #0A84FF);
+  background: rgba(38, 38, 42, 0.55);
+  border-color: rgba(255, 255, 255, 0.12);
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  color: rgba(245, 245, 247, 0.94);
+}
+/* 跟随系统（auto）在深色环境下自动切换为深色玻璃 */
+@media (prefers-color-scheme: dark) {
+  .dsh-tt-toast {
+    --tt-accent: var(--dsh-tt-accent, #0A84FF);
+    background: rgba(38, 38, 42, 0.55);
+    border-color: rgba(255, 255, 255, 0.12);
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+    color: rgba(245, 245, 247, 0.94);
+  }
+}
+
+/* 显式浅色（覆盖系统深色） */
+.dsh-tt-theme-light .dsh-tt-toast {
+  --tt-accent: var(--dsh-tt-accent, #007AFF);
+  background: rgba(255, 255, 255, 0.55);
+  border-color: rgba(255, 255, 255, 0.45);
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.16), inset 0 1px 0 rgba(255, 255, 255, 0.6);
+  color: rgba(28, 28, 30, 0.92);
+}
+.dsh-tt-theme-light .dsh-tt-body { color: rgba(60, 60, 67, 0.7); }
+.dsh-tt-theme-light .dsh-tt-btn { background: rgba(120, 120, 128, 0.16); color: rgba(28, 28, 30, 0.9); border-color: rgba(255, 255, 255, 0.35); }
+.dsh-tt-theme-light .dsh-tt-btn:hover { background: rgba(120, 120, 128, 0.26); }
+.dsh-tt-theme-light .dsh-tt-close { background: rgba(120, 120, 128, 0.18); color: rgba(60, 60, 67, 0.7); }
+.dsh-tt-theme-light .dsh-tt-close:hover { background: rgba(120, 120, 128, 0.32); color: rgba(28, 28, 30, 0.95); }
+
+.dsh-tt-task { border-left: 3px solid #34C759; }
+.dsh-tt-error { border-left: 3px solid #FF453A; }
+.dsh-tt-test { border-left: 3px solid var(--tt-accent); }
+
+.dsh-tt-title { font-weight: 600; font-size: 13.5px; line-height: 1.35; letter-spacing: -0.01em; }
+.dsh-tt-body { font-size: 12.5px; line-height: 1.45; color: rgba(60, 60, 67, 0.7); overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; word-break: break-all; }
+@media (prefers-color-scheme: dark) { .dsh-tt-body { color: rgba(235, 235, 245, 0.66); } }
+.dsh-tt-theme-dark .dsh-tt-body { color: rgba(235, 235, 245, 0.66); }
 .dsh-tt-body--expanded { -webkit-line-clamp: unset; max-height: 240px; overflow: auto; white-space: pre-wrap; }
-.dsh-tt-actions { display: flex; gap: 8px; margin-top: 2px; }
-.dsh-tt-btn { flex: 1; background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-primary); border: 1px solid var(--dsw-alias-border-l1); border-radius: 7px; padding: 5px 8px; font-size: 12px; cursor: pointer; }
-.dsh-tt-btn:hover { border-color: var(--dsw-alias-border-l2); }
-.dsh-tt-btn--primary { background: var(--dsw-alias-brand-primary); color: #fff; border-color: transparent; }
-.dsh-tt-close { position: absolute; top: 6px; right: 8px; background: none; border: none; color: var(--dsw-alias-label-secondary); cursor: pointer; font-size: 16px; line-height: 1; padding: 2px 4px; }
-.dsh-tt-close:hover { color: var(--dsw-alias-label-primary); }
-.dsh-tt-settings { display: flex; flex-direction: column; gap: 12px; padding: 4px 2px; }
-.dsh-tt-section-title { margin: 0; font-size: 15px; font-weight: 600; color: var(--dsw-alias-label-primary); }
-.dsh-tt-hint { margin: 0; font-size: 12px; line-height: 1.5; color: var(--dsw-alias-label-secondary); }
-.dsh-tt-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 10px; border: 1px solid var(--dsw-alias-border-l1); border-radius: 8px; background: var(--dsw-alias-bg-layer-1); }
+
+.dsh-tt-actions { display: flex; gap: 8px; margin-top: 3px; }
+.dsh-tt-btn { flex: 1; background: rgba(120, 120, 128, 0.16); color: rgba(28, 28, 30, 0.9); border: 1px solid rgba(255, 255, 255, 0.35); border-radius: 10px; padding: 6px 8px; font-size: 12.5px; font-weight: 500; cursor: pointer; transition: background 0.15s ease, transform 0.1s ease; }
+.dsh-tt-btn:hover { background: rgba(120, 120, 128, 0.26); }
+.dsh-tt-btn:active { transform: scale(0.97); }
+.dsh-tt-theme-dark .dsh-tt-btn { background: rgba(255, 255, 255, 0.14); color: rgba(245, 245, 247, 0.95); border-color: rgba(255, 255, 255, 0.12); }
+.dsh-tt-theme-dark .dsh-tt-btn:hover { background: rgba(255, 255, 255, 0.22); }
+@media (prefers-color-scheme: dark) { .dsh-tt-btn { background: rgba(255, 255, 255, 0.14); color: rgba(245, 245, 247, 0.95); border-color: rgba(255, 255, 255, 0.12); } .dsh-tt-btn:hover { background: rgba(255, 255, 255, 0.22); } }
+
+.dsh-tt-btn--primary { background: var(--tt-accent); color: #fff; border-color: transparent; }
+.dsh-tt-btn--primary:hover { background: var(--tt-accent); filter: brightness(1.08); }
+@media (prefers-color-scheme: dark) { .dsh-tt-btn--primary { color: #fff; } }
+
+.dsh-tt-close { position: absolute; top: 8px; right: 10px; width: 22px; height: 22px; display: flex; align-items: center; justify-content: center; background: rgba(120, 120, 128, 0.18); border: none; border-radius: 50%; color: rgba(60, 60, 67, 0.7); cursor: pointer; font-size: 13px; line-height: 1; }
+.dsh-tt-close:hover { background: rgba(120, 120, 128, 0.32); color: rgba(28, 28, 30, 0.95); }
+.dsh-tt-theme-dark .dsh-tt-close { background: rgba(255, 255, 255, 0.16); color: rgba(235, 235, 245, 0.7); }
+.dsh-tt-theme-dark .dsh-tt-close:hover { background: rgba(255, 255, 255, 0.28); color: rgba(245, 245, 247, 0.98); }
+@media (prefers-color-scheme: dark) { .dsh-tt-close { background: rgba(255, 255, 255, 0.16); color: rgba(235, 235, 245, 0.7); } }
+
+/* 设置页 */
+.dsh-tt-settings { display: flex; flex-direction: column; gap: 12px; padding: 4px 2px; font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif; color: var(--text, rgba(28, 28, 30, 0.9)); }
+.dsh-tt-section-title { margin: 0; font-size: 15px; font-weight: 600; letter-spacing: -0.01em; color: var(--text, rgba(28, 28, 30, 0.92)); }
+.dsh-tt-hint { margin: 0; font-size: 12px; line-height: 1.5; color: rgba(60, 60, 67, 0.6); }
+.dsh-tt-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 10px; border: 1px solid rgba(120, 120, 128, 0.22); border-radius: 10px; background: rgba(120, 120, 128, 0.08); }
 .dsh-tt-row-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.dsh-tt-row-label { font-size: 13px; color: var(--dsw-alias-label-primary); }
-.dsh-tt-row-desc { font-size: 11px; color: var(--dsw-alias-label-secondary); }
-.dsh-tt-select, .dsh-tt-input { background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-primary); border: 1px solid var(--dsw-alias-border-l1); border-radius: 6px; padding: 4px 6px; font-size: 12px; max-width: 180px; }
-.dsh-tt-check { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--dsw-alias-label-primary); cursor: pointer; }
+.dsh-tt-row-label { font-size: 13px; font-weight: 500; color: var(--text, rgba(28, 28, 30, 0.92)); }
+.dsh-tt-row-desc { font-size: 11px; color: rgba(60, 60, 67, 0.55); }
+.dsh-tt-select, .dsh-tt-input { background: rgba(255, 255, 255, 0.6); color: rgba(28, 28, 30, 0.92); border: 1px solid rgba(120, 120, 128, 0.28); border-radius: 8px; padding: 4px 6px; font-size: 12px; max-width: 180px; }
+.dsh-tt-check { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text, rgba(28, 28, 30, 0.92)); cursor: pointer; }
 .dsh-tt-actions-row { display: flex; gap: 8px; }
-.dsh-tt-btn-lg { background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-primary); border: 1px solid var(--dsw-alias-border-l1); border-radius: 6px; padding: 6px 12px; font-size: 12px; cursor: pointer; }
-.dsh-tt-btn-lg:hover { border-color: var(--dsw-alias-border-l2); }
+.dsh-tt-btn-lg { background: #007AFF; color: #fff; border: 1px solid transparent; border-radius: 8px; padding: 6px 14px; font-size: 12.5px; font-weight: 500; cursor: pointer; }
+.dsh-tt-btn-lg:hover { filter: brightness(1.06); }
 `
   document.head.appendChild(tag)
 }
@@ -268,12 +339,24 @@ const apply = async (ctx) => {
     return null
   }
 
+  // 读取 dsh 当前皮肤的主色（若用户开启「跟随 dsh 皮肤主题色」）。
+  function readAccent() {
+    if (typeof document === 'undefined') return ''
+    try {
+      const v = getComputedStyle(document.documentElement).getPropertyValue('--dsw-alias-brand-primary')
+      return (v && v.trim()) || ''
+    } catch (e) { return '' }
+  }
+
   function ToastStack() {
     const [items, setItems] = React.useState([])
     React.useEffect(() => emitter.subscribe(() => setItems(state.toasts)), [])
     const cfg = state.config
     const t = ui(cfg.locale)
-    if (!items.length) return React.createElement('div', { className: 'dsh-tt-host dsh-tt-host--' + cfg.position })
+    const themeClass = cfg.theme === 'light' ? ' dsh-tt-theme-light' : cfg.theme === 'dark' ? ' dsh-tt-theme-dark' : ''
+    const accent = cfg.followAccent ? readAccent() : ''
+    const hostStyle = accent ? { '--dsh-tt-accent': accent } : null
+    if (!items.length) return React.createElement('div', { className: 'dsh-tt-host dsh-tt-host--' + cfg.position + themeClass, style: hostStyle })
     const nodes = items.map((toast) => {
       const canNavigate = cfg.viewBehavior === 'navigate' && !!toast.sessionId
       const onView = () => {
@@ -300,7 +383,7 @@ const apply = async (ctx) => {
         title: toast.sessionId ? t.viewResult + ' · ' + toast.sessionId : '',
       }, children)
     })
-    return React.createElement('div', { className: 'dsh-tt-host dsh-tt-host--' + cfg.position }, nodes)
+    return React.createElement('div', { className: 'dsh-tt-host dsh-tt-host--' + cfg.position + themeClass, style: hostStyle }, nodes)
   }
 
   // ---------- 设置页（settings.section） ----------
@@ -321,6 +404,8 @@ const apply = async (ctx) => {
       })
       if (patch.enabled !== undefined) next.enabled = patch.enabled
       if (patch.locale !== undefined) next.locale = patch.locale
+      if (patch.theme !== undefined) next.theme = patch.theme
+      if (patch.followAccent !== undefined) next.followAccent = patch.followAccent
       if (patch.position !== undefined) next.position = patch.position
       if (patch.viewBehavior !== undefined) next.viewBehavior = patch.viewBehavior
       if (patch.showSummary !== undefined) next.showSummary = patch.showSummary
@@ -344,6 +429,7 @@ const apply = async (ctx) => {
 
     const posOpts = POSITIONS.map((p) => React.createElement('option', { key: p.id, value: p.id }, cfg.locale === 'en' ? p.en : p.zh))
     const langOpts = LOCALES.map((l) => React.createElement('option', { key: l.id, value: l.id }, cfg.locale === 'en' ? l.en : l.zh))
+    const themeOpts = THEMES.map((tm) => React.createElement('option', { key: tm.id, value: tm.id }, cfg.locale === 'en' ? tm.en : tm.zh))
     const vbOpts = VIEW_BEHAVIORS.map((b) => React.createElement('option', { key: b.id, value: b.id }, cfg.locale === 'en' ? b.en : b.zh))
     const levelOpts = LEVELS.map((l) => React.createElement('option', { key: l.id, value: l.id }, cfg.locale === 'en' ? l.en : l.zh))
 
@@ -393,6 +479,11 @@ const apply = async (ctx) => {
         ' ' + t.enable
       ),
       selectRow(t.language, null, React.createElement('select', { className: 'dsh-tt-select', value: cfg.locale, onChange: (e) => update({ locale: e.target.value }) }, langOpts)),
+      selectRow(t.theme, null, React.createElement('select', { className: 'dsh-tt-select', value: cfg.theme, onChange: (e) => update({ theme: e.target.value }) }, themeOpts)),
+      React.createElement('label', { className: 'dsh-tt-check' },
+        React.createElement('input', { type: 'checkbox', checked: !!cfg.followAccent, onChange: (e) => update({ followAccent: e.target.checked }) }),
+        ' ' + t.followAccent
+      ),
       selectRow(t.position, null, React.createElement('select', { className: 'dsh-tt-select', value: cfg.position, onChange: (e) => update({ position: e.target.value }) }, posOpts)),
       selectRow(t.viewBehavior, null, React.createElement('select', { className: 'dsh-tt-select', value: cfg.viewBehavior, onChange: (e) => update({ viewBehavior: e.target.value }) }, vbOpts)),
       selectRow(t.taskLevel, null, React.createElement('select', { className: 'dsh-tt-select', value: cfg.categories.task, onChange: (e) => update({ category: 'task', level: e.target.value }) }, levelOpts)),
