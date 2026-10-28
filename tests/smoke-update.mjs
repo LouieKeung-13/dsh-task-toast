@@ -15,6 +15,8 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+// 测试期间禁止自更新覆盖仓库文件
+process.env.DSH_TT_SKIP_SELF_UPDATE = '1'
 
 // ---------- GitHub API mock ----------
 let upstreamVersion = '9.9.9'

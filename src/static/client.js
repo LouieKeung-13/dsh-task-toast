@@ -569,9 +569,13 @@ const apply = async (ctx) => {
       setUpdRunning(true)
       setUpdLog(cfg.locale === 'en' ? 'Running: dsh plugin remove → add … (may take a minute)' : '正在执行：dsh plugin remove → add …（可能需要一分钟）')
       api.update().then((r) => {
+        const en = cfg.locale === 'en'
+        const modeNote = r && r.mode === 'self'
+          ? (en ? ' (files replaced' + (r.version ? ' → v' + r.version : '') + ')' : '（已替换插件文件' + (r.version ? ' → v' + r.version : '') + '）')
+          : (r && r.mode === 'cli' ? (en ? ' (via dsh plugin)' : '（已执行 dsh plugin）') : '')
         const head = r && r.ok
-          ? (cfg.locale === 'en' ? '✅ Update finished. Restart dsh to apply.\n\n' : '✅ 更新完成，请重启 dsh 生效。\n\n')
-          : (cfg.locale === 'en' ? '⚠️ Auto-update failed. Please copy the command and run it manually.\n\n' : '⚠️ 自动更新失败，请复制命令在终端手动执行。\n\n')
+          ? (en ? '✅ Updated' + modeNote + '. Restart dsh to apply.\n\n' : '✅ 更新完成' + modeNote + '，请重启 dsh 生效。\n\n')
+          : (en ? '⚠️ Auto-update failed. Please copy the command and run it manually.\n\n' : '⚠️ 自动更新失败，请复制命令在终端手动执行。\n\n')
         setUpdLog(head + ((r && r.log) || ''))
       }).catch((err) => {
         setUpdLog((cfg.locale === 'en' ? '⚠️ Update request failed: ' : '⚠️ 更新请求失败：') + ((err && err.message) || String(err)) + '\n\n' + (cfg.locale === 'en' ? 'Fallback command:\n' : '可手动执行：\n') + (state.updateCmd || LOCAL_UPDATE_CMD))
