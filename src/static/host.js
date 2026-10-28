@@ -11,6 +11,7 @@
 import { createRequire } from 'node:module'
 import { spawn } from 'node:child_process'
 import { copyFileSync, existsSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
@@ -317,6 +318,28 @@ export default {
     // 最近一次卡片结果（/version 暴露给设置页：卡片没弹出来时能直接看到原因）
     let lastCard = { at: 0, ok: false, error: '尚未弹出过卡片' }
 
+    // 等等卡片「窗口已显示」的最长时间。
+    // ⚠️ 实测：缓存缺失时 PowerShell 需要即时编译 C#（Roslyn/CodeDom 冷启动可达 4~5 秒），
+    // v1.5.2 的 5 秒看门狗几乎必然误杀（卡片刚要显示就被 kill）。这里放宽到 20 秒。
+    const CARD_WATCHDOG_MS = 20000
+
+    /** 卡片追踪日志路径（card.ps1 每阶段都会写），用于事后排障。 */
+    function cardLogPath() {
+      const base = process.env.LOCALAPPDATA || process.env.APPDATA
+        || join(homedir(), 'AppData', 'Local')
+        || join(homedir(), 'AppData', 'Roaming')
+      try { return join(base, 'dsh-task-toast', 'card.log') } catch (e) { return '' }
+    }
+    function readCardLog(maxChars) {
+      const p = cardLogPath()
+      if (!p) return ''
+      try {
+        if (!existsSync(p)) return ''
+        const t = readFileSync(p, 'utf8')
+        return t.length > maxChars ? t.slice(-maxChars) : t
+      } catch (e) { return '' }
+    }
+
     function cardSupported() {
       if (process.platform !== 'win32' || !CARD_SCRIPT) return false
       try { return existsSync(CARD_SCRIPT) } catch (e) { return false }
@@ -343,6 +366,46 @@ export default {
      *   · 进程异常退出 / 5 秒内未显示 → { ok: false, error, stderr }
      * 调用方在失败时必须把通知转回应用内呈现 —— 通知永远不能因为卡片挂了而丢掉。
      */
+    /** 卡片启动参数（card.ps1） */
+    function cardArgs(item, slot, extra) {
+      const id = String(item.seq)
+      const args = [
+        '-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass',
+        '-File', CARD_SCRIPT,
+        '-Title', String(item.title || '').replace(/[\r\n]+/g, ' ').slice(0, 120),
+        '-Body', String(item.body || '').replace(/[\r\n]+/g, ' ').slice(0, 300),
+        '-SessionId', String(item.sessionId || ''),
+        '-Locale', config.locale === 'en' ? 'en' : 'zh',
+        '-Position', String(config.position || 'bottom-right'),
+        '-Theme', String(config.theme || 'auto'),
+        '-Accent', config.accent || '#007AFF',
+        '-Timeout', String(cardTimeoutMs()),
+        '-Slot', String(slot),
+        '-Id', id,
+      ]
+      if (selfPort) args.push('-CallbackUrl', 'http://127.0.0.1:' + selfPort + '/dsh-task-toast/card-action')
+      if (extra && extra.length) for (const a of extra) args.push(a)
+      return args
+    }
+
+    /**
+     * 只发一条 Windows 原生通知（横幅 + 通知中心），不创建卡片窗口。
+     * 用途：① 用户勾选「同时发系统通知」；② 卡片起不来时的兜底通道。
+     */
+    function spawnToast(item) {
+      if (!cardSupported() || disposed) return
+      try {
+        const child = spawn('powershell', cardArgs(item, 0, ['-ToastOnly', '1', '-Toast', '1']), { windowsHide: true })
+        let err = ''
+        if (child.stderr) child.stderr.on('data', (d) => { err += String(d) })
+        child.on('error', () => { /* ignore */ })
+        child.on('close', (code) => {
+          if (code === 0) console.log('[dsh-task-toast] 已发送 Windows 系统通知：' + (item.title || ''))
+          else console.warn('[dsh-task-toast] 系统通知未发出（code=' + code + '）' + (err ? '：' + err.slice(-200) : ''))
+        })
+      } catch (e) { /* ignore */ }
+    }
+
     function spawnCard(item) {
       return new Promise((resolve) => {
         if (!cardSupported() || disposed) { resolve({ ok: false, error: 'card script unavailable' }); return }
@@ -355,21 +418,8 @@ export default {
         }
         cardSeq += 1
 
-        const args = [
-          '-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass',
-          '-File', CARD_SCRIPT,
-          '-Title', String(item.title || '').replace(/[\r\n]+/g, ' ').slice(0, 120),
-          '-Body', String(item.body || '').replace(/[\r\n]+/g, ' ').slice(0, 300),
-          '-SessionId', String(item.sessionId || ''),
-          '-Locale', config.locale === 'en' ? 'en' : 'zh',
-          '-Position', String(config.position || 'bottom-right'),
-          '-Theme', String(config.theme || 'auto'),
-          '-Accent', config.accent || '#007AFF',
-          '-Timeout', String(cardTimeoutMs()),
-          '-Slot', String(slot),
-          '-Id', id,
-        ]
-        if (selfPort) args.push('-CallbackUrl', 'http://127.0.0.1:' + selfPort + '/dsh-task-toast/card-action')
+        const extra = config.topmost && config.topmost.alsoSystemToast ? ['-Toast', '1'] : []
+        const args = cardArgs(item, slot, extra)
 
         let child
         try {
@@ -384,6 +434,7 @@ export default {
         let settled = false
         let stderrBuf = ''
         let outBuf = ''
+        let stage = 'boot'
         let watchdog = null
         const release = () => {
           if (cardChildren.get(slot) === child) cardChildren.delete(slot)
@@ -394,27 +445,42 @@ export default {
           if (settled) return
           settled = true
           if (watchdog) { try { clearTimeout(watchdog) } catch (e) { /* ignore */ } }
-          lastCard = { at: Date.now(), ok: ok, error: ok ? '' : String(error || 'unknown') }
+          lastCard = {
+            at: Date.now(),
+            ok: ok,
+            error: ok ? '' : String(error || 'unknown'),
+            stage: stage,
+            ms: Date.now() - startedAt,
+          }
           if (!ok) {
-            console.warn('[dsh-task-toast] 独立卡片未显示（' + error + '），通知转回应用内呈现')
+            console.warn('[dsh-task-toast] 独立卡片未显示（阶段=' + stage + '，' + error + '），通知转回应用内呈现')
             if (stderrBuf) console.warn('[dsh-task-toast] 卡片 stderr：' + stderrBuf.slice(-600))
             cardItems.delete(id)
             try { child.kill() } catch (e) { /* ignore */ }
           } else {
             console.log('[dsh-task-toast] 独立卡片已显示 #' + cardSeq + '（slot ' + slot + '，' + cardTimeoutMs() + 'ms 后自动消失）')
           }
-          resolve({ ok: ok, error: ok ? '' : String(error || 'unknown'), stderr: stderrBuf.slice(-300) })
+          resolve({ ok: ok, error: ok ? '' : String(error || 'unknown'), stage: stage, stderr: stderrBuf.slice(-300) })
         }
 
-        // 5 秒没等到「窗口已显示」就判定失败（正常应在 1~2 秒内出现）
+        // 20 秒内没等到「窗口已显示」才判定失败。
+        // 冷启动时 PowerShell 需要即时编译 C#，实测可到 4~5 秒；5 秒会误杀。
         watchdog = setTimeout(() => {
-          settle(false, 'timeout: 卡片 5 秒内未报告窗口已显示（编译或启动卡住）')
-        }, 5000)
+          settle(false, 'timeout: 卡片 ' + (CARD_WATCHDOG_MS / 1000) + ' 秒内未报告窗口已显示（最后阶段=' + stage + '）')
+        }, CARD_WATCHDOG_MS)
 
         try {
           if (child.stderr) child.stderr.on('data', (d) => { stderrBuf += String(d); if (stderrBuf.length > 4000) stderrBuf = stderrBuf.slice(-2000) })
           if (child.stdout) child.stdout.on('data', (d) => {
             outBuf += String(d)
+            // 逐行解析阶段打点 {"stage":"xxx","ms":n}
+            try {
+              const lines = String(d).split(/\r?\n/)
+              for (const ln of lines) {
+                const m = ln.match(/"stage"\s*:\s*"([^"]+)"/)
+                if (m && m[1]) stage = m[1]
+              }
+            } catch (e) { /* ignore */ }
             if (outBuf.indexOf('"stage":"shown"') >= 0) { release(); settle(true, '') }
           })
         } catch (e) { /* ignore */ }
@@ -424,7 +490,7 @@ export default {
           release()
           if (!settled) {
             const tail = stderrBuf ? ' · ' + stderrBuf.slice(-160).replace(/\s+/g, ' ') : ''
-            settle(false, '进程提前退出 code=' + code + '（耗时 ' + (Date.now() - startedAt) + 'ms）' + tail)
+            settle(false, '进程提前退出 code=' + code + '（阶段=' + stage + '，耗时 ' + (Date.now() - startedAt) + 'ms）' + tail)
           }
         })
       })
@@ -515,26 +581,58 @@ export default {
      * 从 GitHub Contents API 下载指定 ref 的运行时文件，写入插件目录（自更新）。
      * 不触碰 package.json / node_modules，因此 desktop profile 的独占管理不受影响。
      */
+    /**
+     * 取单个文件的字节：优先 GitHub Contents API，失败回落 raw.githubusercontent.com。
+     * 双通道是为了抗 API 限流（403）与网络策略差异 —— 任一通即可完成更新。
+     */
+    async function fetchFileBytes(rel, ref) {
+      let lastErr = null
+      const timeout = (ms) => {
+        const ctrl = new AbortController()
+        const to = setTimeout(() => { try { ctrl.abort() } catch (e) { /* ignore */ } }, ms)
+        return { ctrl: ctrl, clear: () => clearTimeout(to) }
+      }
+      // 1) Contents API
+      try {
+        const t = timeout(15000)
+        try {
+          const url = 'https://api.github.com/repos/' + REPO + '/contents/' + rel + '?ref=' + encodeURIComponent(ref)
+          const res = await fetch(url, {
+            headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'dsh-task-toast' },
+            signal: t.ctrl.signal,
+          })
+          if (!res.ok) throw new Error('HTTP ' + res.status)
+          const j = await res.json()
+          if (!j || typeof j.content !== 'string') throw new Error('no content field')
+          const buf = Buffer.from(j.content, j.encoding === 'base64' ? 'base64' : 'utf8')
+          if (!buf.length) throw new Error('empty file')
+          return buf
+        } finally { t.clear() }
+      } catch (e) {
+        lastErr = e
+      }
+      // 2) raw.githubusercontent.com
+      try {
+        const t = timeout(15000)
+        try {
+          const url = 'https://raw.githubusercontent.com/' + REPO + '/' + encodeURIComponent(ref) + '/' + rel
+          const res = await fetch(url, { headers: { 'User-Agent': 'dsh-task-toast' }, signal: t.ctrl.signal })
+          if (!res.ok) throw new Error('HTTP ' + res.status)
+          const buf = Buffer.from(await res.arrayBuffer())
+          if (!buf.length) throw new Error('empty file')
+          return buf
+        } finally { t.clear() }
+      } catch (e) {
+        lastErr = e
+      }
+      throw new Error(rel + ': ' + ((lastErr && lastErr.message) || 'download failed'))
+    }
+
     async function downloadFrom(ref) {
       const plan = []
       for (const rel of SELF_UPDATE_FILES) {
-        const url = 'https://api.github.com/repos/' + REPO + '/contents/' + rel + '?ref=' + encodeURIComponent(ref)
-        const ctrl = new AbortController()
-        const to = setTimeout(() => { try { ctrl.abort() } catch (e) { /* ignore */ } }, 15000)
-        try {
-          const res = await fetch(url, {
-            headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'dsh-task-toast' },
-            signal: ctrl.signal,
-          })
-          if (!res.ok) throw new Error(rel + ': HTTP ' + res.status)
-          const j = await res.json()
-          if (!j || typeof j.content !== 'string') throw new Error(rel + ': no content field')
-          const buf = Buffer.from(j.content, j.encoding === 'base64' ? 'base64' : 'utf8')
-          if (!buf.length) throw new Error(rel + ': empty file')
-          plan.push({ rel: rel, buf: buf })
-        } finally {
-          clearTimeout(to)
-        }
+        const buf = await fetchFileBytes(rel, ref)
+        plan.push({ rel: rel, buf: buf })
       }
       // 一致性校验：新 config 里必须带 VERSION，避免拉到半套文件
       const cfgFile = plan.find((p) => p.rel === 'lib/config.js')
@@ -571,13 +669,14 @@ export default {
       return { ok: true, mode: 'self', ref: ref, version: newVersion, log: lines.join('\n') }
     }
 
-    /** 自更新：先试对应的 tag，失败回落 master。 */
-    async function selfUpdate() {
+    /** 自更新：默认先试对应 tag，失败回落 master；force = true 时直接拉 master（最新代码）。 */
+    async function selfUpdate(force) {
       if (process.env.DSH_TT_SKIP_SELF_UPDATE === '1') return { ok: false, error: 'self-update skipped by env' }
       if (!PLUGIN_ROOT) return { ok: false, error: 'plugin root unknown' }
       const refs = []
+      if (force) refs.push('master')
       if (updateState.latest) refs.push('v' + updateState.latest)
-      refs.push('master')
+      if (refs.indexOf('master') < 0) refs.push('master')
       let lastError = null
       for (const ref of refs) {
         try {
@@ -591,15 +690,23 @@ export default {
     }
 
     /** 一键更新：优先自更新（覆盖运行时文件），失败再回退 dsh plugin 命令。 */
-    async function performUpdate() {
+    async function performUpdate(force) {
       const target = updateState.latest || ''
       const steps = []
+      if (force) steps.push('强制重装：已从 master 重新拉取插件文件（忽略本地版本号）。')
 
-      const su = await selfUpdate().catch((e) => ({ ok: false, error: (e && e.message) || String(e) }))
+      const su = await selfUpdate(force).catch((e) => ({ ok: false, error: (e && e.message) || String(e) }))
       if (su && su.ok) {
         steps.push('自更新完成（' + su.version + '，ref=' + su.ref + '）：\n' + su.log)
-        steps.push('需要重启 dsh 才会加载新版本。')
-        return { ok: true, mode: 'self', version: su.version, log: steps.join('\n\n'), profile: resolveProfile() }
+        // 同步内存里的版本状态，避免更新后仍提示「有新版本」
+        updateState.local = su.version
+        if (su.version) {
+          updateState.latest = su.version
+          updateState.hasUpdate = false
+        }
+        updateState.checkedAt = Date.now()
+        steps.push('注意：当前进程仍在跑旧代码，需要重启 dsh 才会加载新版本。')
+        return { ok: true, mode: 'self', version: su.version, log: steps.join('\n\n'), profile: resolveProfile(), restartRequired: true }
       }
       steps.push('自更新失败：' + ((su && su.error) || 'unknown') + '\n回退到 dsh plugin 命令…')
 
@@ -669,11 +776,19 @@ export default {
       const mode = topmostMode()
       if (mode === 'card') {
         spawnCard(item).then((r) => {
-          if (!r || !r.ok) { enqueueVisible(item); holdTopmost() }
-        }).catch(() => { enqueueVisible(item); holdTopmost() })
+          if (!r || !r.ok) {
+            // 卡片没起来：应用内浮层 + 抬 dsh 窗口 + Windows 系统通知，三重兜底，通知绝不丢
+            enqueueVisible(item)
+            holdTopmost()
+            spawnToast(item)
+          }
+        }).catch(() => { enqueueVisible(item); holdTopmost(); spawnToast(item) })
         return { mode: mode, carded: null } // carded 由 spawnCard 异步决定
       }
-      if (mode === 'window') holdTopmost()
+      if (mode === 'window') {
+        holdTopmost()
+        if (config.topmost && config.topmost.alsoSystemToast) spawnToast(item)
+      }
       enqueueVisible(item)
       return { mode: mode, carded: false }
     }
@@ -782,11 +897,12 @@ export default {
           }
           const mode = topmostMode()
           if (mode === 'card') {
+            if (config.topmost && config.topmost.alsoSystemToast) spawnToast(item)
             // 等卡片真正「窗口已显示」再答复，失败时把原因带回给页面
             const r = await spawnCard(item)
             sendJson(res, 200, {
               ok: true, mode: mode, carded: r.ok, cardSupported: cardSupported(),
-              error: r.error || undefined, stderr: r.stderr || undefined,
+              stage: r.stage || undefined, error: r.error || undefined, stderr: r.stderr || undefined,
             })
             return
           }
@@ -840,7 +956,18 @@ export default {
         path: '/dsh-task-toast/version',
         handler: (req, res) => {
           if (req.method !== 'GET') { sendJson(res, 405, { ok: false }); return }
-          sendJson(res, 200, Object.assign({ ok: true, updateCmd: currentUpdateCmd(), profile: resolveProfile(), repo: REPO, mode: topmostMode(), cardSupported: cardSupported(), cardSelfTest: cardSelfTest, lastCard: lastCard }, updateState))
+          sendJson(res, 200, Object.assign({
+            ok: true,
+            updateCmd: currentUpdateCmd(),
+            profile: resolveProfile(),
+            repo: REPO,
+            mode: topmostMode(),
+            cardSupported: cardSupported(),
+            cardSelfTest: cardSelfTest,
+            lastCard: lastCard,
+            cardLogPath: cardLogPath(),
+            cardLog: readCardLog(1200),
+          }, updateState))
         },
       })
 
@@ -859,9 +986,11 @@ export default {
         path: '/dsh-task-toast/update',
         handler: async (req, res) => {
           if (req.method !== 'POST') { sendJson(res, 405, { ok: false }); return }
-          console.log('[dsh-task-toast] 收到一键更新请求，开始执行 remove → add …')
-          const result = await performUpdate()
-          console.log('[dsh-task-toast] 一键更新结束：ok=' + result.ok)
+          const body = await readJson(req)
+          const force = !!(body && body.force)
+          console.log('[dsh-task-toast] 收到一键更新请求（force=' + force + '），开始执行…')
+          const result = await performUpdate(force)
+          console.log('[dsh-task-toast] 一键更新结束：ok=' + result.ok + (result.version ? ' version=' + result.version : ''))
           sendJson(res, 200, Object.assign({ ok: result.ok }, result))
         },
       })

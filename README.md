@@ -189,6 +189,26 @@ dsh plugin --profile web add github:LouieKeung-13/dsh-task-toast
 
 ### Changelog
 
+- **v1.6.0** — fixes the real reason the standalone card never appeared, and adds a
+  system-notification channel:
+  - Root cause: `card.ps1` derived its compile-cache directory from
+    `$env:LOCALAPPDATA`, which is **empty** inside dsh's Host (a Node child of
+    Electron). The cache lookup threw, so every notification recompiled the C# in
+    process — measured at 4–5 s cold, which collided with v1.5.2's **5-second
+    watchdog**: the card was killed right as it was about to appear. The cache dir
+    now falls back through `LOCALAPPDATA → APPDATA → USERPROFILE\AppData\Local →
+    TEMP`, and the wait window is **20 s**. Measured: 421 ms cold compile, **362 ms**
+    from spawn to "shown" (was 4910 ms).
+  - Every stage now emits a stdout marker and appends to
+    `%APPDATA%\dsh-task-toast\card.log`; Settings shows the failing stage, reason
+    and log tail whenever a card fails.
+  - New **Windows toast** channel (WinRT): optionally fires a native notification
+    alongside the card — banner above every window, kept in the Action Center. It
+    is also the fallback when the card cannot start, so nothing is ever lost.
+  - Settings now uses dsh design tokens (`--dsw-alias-*`) so the panel matches the
+    built-in rows; "auto-dismiss" and "card lifetime" are documented as two
+    independent timers; added **Force reinstall (ignore version)** and a
+    `raw.githubusercontent.com` fallback when the GitHub API is rate-limited.
 - **v1.5.2** — root-cause fix for the standalone card never appearing: the script
   used LF line endings, but Windows PowerShell 5.1 requires CRLF for here-strings
   (`@'...'@`), so parsing failed and the process exited instantly — and the old

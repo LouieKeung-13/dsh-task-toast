@@ -30,7 +30,7 @@ const api = {
   poll: (since) => fetchJson('/poll?since=' + encodeURIComponent(String(since))),
   version: () => fetchJson('/version'),
   checkUpdate: () => fetchJson('/check-update', { method: 'POST' }),
-  update: () => fetchJson('/update', { method: 'POST' }),
+  update: (payload) => fetchJson('/update', { method: 'POST', body: JSON.stringify(payload || {}) }),
   topmost: (action) => fetchJson('/topmost', { method: 'POST', body: JSON.stringify({ action: action }) }),
   card: (action) => fetchJson('/card', { method: 'POST', body: JSON.stringify({ action: action }) }),
 }
@@ -51,7 +51,9 @@ function ui(locale) {
     viewBehavior: '「查看结果」行为',
     showSummary: '显示结果摘要',
     onlyOther: '仅推送其他会话（当前正在查看的会话不提示）',
-    autoDismiss: '自动消失（秒，0 表示不自动关闭）',
+    // 与应用内浮层的「自动消失」区分：本项只管应用内浮层，两者互不影响
+    autoDismiss: '应用内浮层自动消失（秒，0 = 不自动关闭）',
+    autoDismissHint: '只作用于 dsh 窗口里的浮层气泡，与「卡片停留」互不冲突；卡片弹出成功时应用内不再重复弹。',
     taskLevel: '任务完成',
     errorLevel: '错误失败',
     updateLevel: '插件更新提醒',
@@ -90,7 +92,10 @@ function ui(locale) {
     modeWindow: '提升 dsh 窗口',
     modeOff: '关闭（仅应用内）',
     topmostHint: '「独立小卡片」会创建一个脱离 dsh 的无边框浮窗，只占屏幕一角、压在所有应用之上、不抢焦点；「提升 dsh 窗口」则把整个 dsh 窗口顶到最前面。仅 Windows 桌面客户端支持。',
-    topmostDuration: '卡片停留（秒）',
+    topmostDuration: '卡片停留（秒，0 = 跟随浮层）',
+    topmostDurationHint: '只作用于独立卡片 / 窗口置顶的时长，与「应用内浮层自动消失」是两条独立计时，不冲突。鼠标停在卡片上时会暂停倒计时。',
+    alsoToast: '同时发送 Windows 系统通知（通知中心留痕）',
+    alsoToastHint: '开启后，卡片弹出的同时也会发一条 Windows 原生通知：横幅直接浮在所有窗口之上，并沉淀到系统通知中心；卡片万一没起来，它也是兜底通道。',
     topmostTest: '测试置顶',
     topmostOk: '已置顶，3 秒后自动恢复',
     topmostFail: '置顶未生效（非桌面客户端，或未找到 dsh 窗口）',
@@ -102,6 +107,11 @@ function ui(locale) {
     cardSelfTest: '卡片自检',
     cardSelfOk: '通过（可正常弹出）',
     cardLastFail: '最近一次卡片未显示',
+    cardLog: '卡片追踪日志',
+    // ---- 更新（新增：强制重装） ----
+    forceReinstall: '强制重装（忽略版本）',
+    forceReinstalling: '重装中…',
+    reinstallHint: '已是最新版时也可用它把插件文件整包重刷一遍（修损坏安装）；完成后需重启 dsh。',
   }
   const en = {
     settingsTitle: 'Task notifications',
@@ -114,7 +124,9 @@ function ui(locale) {
     viewBehavior: '"View result" behavior',
     showSummary: 'Show result summary',
     onlyOther: 'Only other sessions (suppress the one you are viewing)',
-    autoDismiss: 'Auto-dismiss (seconds, 0 = never)',
+    // 与应用内浮层的「自动消失」区分：本项只管应用内浮层，两者互不影响
+    autoDismiss: 'In-app overlay auto-dismiss (seconds, 0 = never)',
+    autoDismissHint: 'Applies only to the in-app bubble; independent of “Card lifetime”. When the card shows successfully, no in-app bubble is rendered.',
     taskLevel: 'Task completed',
     errorLevel: 'Error',
     updateLevel: 'Plugin update alerts',
@@ -153,7 +165,10 @@ function ui(locale) {
     modeWindow: 'Raise the dsh window',
     modeOff: 'Off (in-app only)',
     topmostHint: '“Standalone card” creates a borderless window detached from dsh — one corner of the screen, above every app, without stealing focus. “Raise the dsh window” brings the whole dsh window to the front instead. Windows desktop client only.',
-    topmostDuration: 'Card lifetime (seconds)',
+    topmostDuration: 'Card lifetime (seconds, 0 = follow overlay)',
+    topmostDurationHint: 'Only controls the standalone card / topmost window. It is a separate timer from “auto-dismiss” — no conflict. The countdown pauses while the cursor rests on the card.',
+    alsoToast: 'Also send a Windows notification (kept in Action Center)',
+    alsoToastHint: 'When on, a native Windows notification fires alongside the card: the banner floats above every window and is kept in the Action Center. If the card ever fails to appear, this is the fallback channel.',
     topmostTest: 'Test topmost',
     topmostOk: 'Raised on top — restores in 3s',
     topmostFail: 'Topmost did not apply (not the desktop client, or window not found)',
@@ -165,6 +180,11 @@ function ui(locale) {
     cardSelfTest: 'Card self-test',
     cardSelfOk: 'passed (card can be shown)',
     cardLastFail: 'Last card attempt failed',
+    cardLog: 'Card trace log',
+    // ---- Update (force reinstall) ----
+    forceReinstall: 'Force reinstall (ignore version)',
+    forceReinstalling: 'Reinstalling…',
+    reinstallHint: 'Even when already up to date, this re-writes every plugin file (repairs a broken install). Restart dsh afterwards.',
   }
   return locale === 'en' ? en : zh
 }
@@ -188,7 +208,6 @@ function injectCss() {
 
 /* 默认（浅色玻璃） */
 .dsh-tt-toast {
-  --tt-accent: var(--dsh-tt-accent, #007AFF);
   position: relative; pointer-events: auto;
   display: flex; flex-direction: column; gap: 7px;
   padding: 14px 52px 14px 16px;
@@ -205,7 +224,6 @@ function injectCss() {
 
 /* 深色玻璃 */
 .dsh-tt-theme-dark .dsh-tt-toast {
-  --tt-accent: var(--dsh-tt-accent, #0A84FF);
   background: rgba(38, 38, 42, 0.55);
   border-color: rgba(255, 255, 255, 0.12);
   box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.08);
@@ -214,7 +232,6 @@ function injectCss() {
 /* 跟随系统（auto）在深色环境下自动切换为深色玻璃 */
 @media (prefers-color-scheme: dark) {
   .dsh-tt-toast {
-    --tt-accent: var(--dsh-tt-accent, #0A84FF);
     background: rgba(38, 38, 42, 0.55);
     border-color: rgba(255, 255, 255, 0.12);
     box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.08);
@@ -224,7 +241,6 @@ function injectCss() {
 
 /* 显式浅色（覆盖系统深色） */
 .dsh-tt-theme-light .dsh-tt-toast {
-  --tt-accent: var(--dsh-tt-accent, #007AFF);
   background: rgba(255, 255, 255, 0.55);
   border-color: rgba(255, 255, 255, 0.45);
   box-shadow: 0 10px 40px rgba(0, 0, 0, 0.16), inset 0 1px 0 rgba(255, 255, 255, 0.6);
@@ -263,25 +279,46 @@ function injectCss() {
 .dsh-tt-theme-dark .dsh-tt-close:hover { background: rgba(255, 255, 255, 0.28); color: rgba(245, 245, 247, 0.98); }
 @media (prefers-color-scheme: dark) { .dsh-tt-close { background: rgba(255, 255, 255, 0.16); color: rgba(235, 235, 245, 0.7); } }
 
-/* 设置页 */
-.dsh-tt-settings { display: flex; flex-direction: column; gap: 12px; padding: 4px 2px; font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif; color: var(--text, rgba(28, 28, 30, 0.9)); }
-.dsh-tt-section-title { margin: 0; font-size: 15px; font-weight: 600; letter-spacing: -0.01em; color: var(--text, rgba(28, 28, 30, 0.92)); }
-.dsh-tt-hint { margin: 0; font-size: 12px; line-height: 1.5; color: rgba(60, 60, 67, 0.6); }
-.dsh-tt-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 10px; border: 1px solid rgba(120, 120, 128, 0.22); border-radius: 10px; background: rgba(120, 120, 128, 0.08); }
+/* 设置页 —— 全部改用 dsh 设计令牌，让本插件的面板与 dsh 自带的其它设置项完全同色同风格 */
+.dsh-tt-settings {
+  --tt-surface: var(--dsw-alias-bg-secondary, rgba(120,120,128,0.08));
+  --tt-control: var(--dsw-alias-bg-tertiary, rgba(120,120,128,0.16));
+  --tt-border: var(--dsw-alias-border-secondary, rgba(120,120,128,0.22));
+  --tt-fg: var(--dsw-alias-label-primary, rgba(28,28,30,0.92));
+  --tt-fg-dim: var(--dsw-alias-label-secondary, rgba(60,60,67,0.6));
+  display: flex; flex-direction: column; gap: 12px; padding: 4px 2px;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Segoe UI", "Microsoft YaHei", sans-serif;
+  color: var(--tt-fg);
+}
+@media (prefers-color-scheme: dark) {
+  .dsh-tt-settings {
+    --tt-surface: var(--dsw-alias-bg-secondary, rgba(255,255,255,0.06));
+    --tt-control: var(--dsw-alias-bg-tertiary, rgba(255,255,255,0.12));
+    --tt-border: var(--dsw-alias-border-secondary, rgba(255,255,255,0.14));
+    --tt-fg: var(--dsw-alias-label-primary, rgba(245,245,247,0.94));
+    --tt-fg-dim: var(--dsw-alias-label-secondary, rgba(235,235,245,0.62));
+  }
+}
+.dsh-tt-section-title { margin: 0; font-size: 15px; font-weight: 600; letter-spacing: -0.01em; color: var(--tt-fg); }
+.dsh-tt-hint { margin: 0; font-size: 12px; line-height: 1.5; color: var(--tt-fg-dim); }
+.dsh-tt-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 10px; border: 1px solid var(--tt-border); border-radius: 10px; background: var(--tt-surface); }
 .dsh-tt-row-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.dsh-tt-row-label { font-size: 13px; font-weight: 500; color: var(--text, rgba(28, 28, 30, 0.92)); }
-.dsh-tt-row-desc { font-size: 11px; color: rgba(60, 60, 67, 0.55); }
-/* 面板控件统一颜色：输入框与下拉框使用同一中性底色，深浅主题下都与行背景一致 */
-.dsh-tt-settings .dsh-tt-select, .dsh-tt-settings .dsh-tt-input { background: rgba(120, 120, 128, 0.16) !important; color: var(--text, rgba(28, 28, 30, 0.92)) !important; border: 1px solid rgba(120, 120, 128, 0.32); border-radius: 8px; padding: 4px 8px; font-size: 12px; max-width: 180px; }
-.dsh-tt-check { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text, rgba(28, 28, 30, 0.92)); cursor: pointer; }
-.dsh-tt-actions-row { display: flex; gap: 8px; }
-/* 面板主按钮 = 单色（与浮层主按钮同一套） */
-.dsh-tt-btn-lg { background: #1c1c1e; color: #fff; border: 1px solid transparent; border-radius: 8px; padding: 6px 14px; font-size: 12.5px; font-weight: 500; cursor: pointer; }
-.dsh-tt-btn-lg:hover { filter: brightness(1.3); }
-@media (prefers-color-scheme: dark) { .dsh-tt-btn-lg { background: rgba(245, 245, 247, 0.92); color: #1c1c1e; } .dsh-tt-btn-lg:hover { filter: brightness(0.92); } }
-.dsh-tt-btn-lg--ghost { background: rgba(120, 120, 128, 0.14); color: var(--text, rgba(28, 28, 30, 0.9)); border-color: rgba(120, 120, 128, 0.28); }
+.dsh-tt-row-label { font-size: 13px; font-weight: 500; color: var(--tt-fg); }
+.dsh-tt-row-desc { font-size: 11px; color: var(--tt-fg-dim); }
+/* 面板控件与行同一套令牌：下拉框 / 输入框 / 行底色同族，不再出现第三种灰 */
+.dsh-tt-settings .dsh-tt-select, .dsh-tt-settings .dsh-tt-input {
+  background: var(--tt-control) !important; color: var(--tt-fg) !important;
+  border: 1px solid var(--tt-border); border-radius: 8px; padding: 4px 8px; font-size: 12px; max-width: 180px;
+}
+.dsh-tt-settings .dsh-tt-select option { background: var(--tt-surface); color: var(--tt-fg); }
+.dsh-tt-check { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--tt-fg); cursor: pointer; }
+.dsh-tt-actions-row { display: flex; gap: 8px; flex-wrap: wrap; }
+/* 面板按钮 = 单色（与浮层主按钮同一套，不跟随强调色） */
+.dsh-tt-btn-lg { background: var(--dsw-alias-label-primary, #1c1c1e); color: var(--dsw-alias-bg-primary, #fff); border: 1px solid transparent; border-radius: 8px; padding: 6px 14px; font-size: 12.5px; font-weight: 500; cursor: pointer; }
+.dsh-tt-btn-lg:hover { filter: brightness(1.25); }
+.dsh-tt-btn-lg--ghost { background: var(--tt-control); color: var(--tt-fg); border-color: var(--tt-border); }
 .dsh-tt-btn-lg:disabled { opacity: 0.5; cursor: default; filter: none; }
-.dsh-tt-log { margin: 0; max-height: 220px; overflow: auto; white-space: pre-wrap; word-break: break-all; padding: 8px 10px; border-radius: 8px; background: rgba(120, 120, 128, 0.1); border: 1px solid rgba(120, 120, 128, 0.2); color: var(--text, rgba(28, 28, 30, 0.88)); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11.5px; line-height: 1.5; }
+.dsh-tt-log { margin: 0; max-height: 220px; overflow: auto; white-space: pre-wrap; word-break: break-all; padding: 8px 10px; border-radius: 8px; background: var(--tt-surface); border: 1px solid var(--tt-border); color: var(--tt-fg); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11.5px; line-height: 1.5; }
 `
   document.head.appendChild(tag)
 }
@@ -626,10 +663,12 @@ const apply = async (ctx) => {
       setUpdLog((cfg.locale === 'en' ? 'Command copied:\n' : '已复制更新命令：\n') + (state.updateCmd || LOCAL_UPDATE_CMD) + (cfg.locale === 'en' ? '\n\nRun it in a terminal, then restart dsh.' : '\n\n请在终端执行后重启 dsh。'))
     }
 
-    function doUpdate() {
+    function doUpdate(force) {
       setUpdRunning(true)
-      setUpdLog(cfg.locale === 'en' ? 'Running: dsh plugin remove → add … (may take a minute)' : '正在执行：dsh plugin remove → add …（可能需要一分钟）')
-      api.update().then((r) => {
+      setUpdLog(force
+        ? (cfg.locale === 'en' ? 'Reinstalling plugin files from master …' : '正在从 master 重新拉取插件文件 …')
+        : (cfg.locale === 'en' ? 'Running one-click update … (may take a minute)' : '正在执行一键更新 …（可能需要一分钟）'))
+      api.update({ force: !!force }).then((r) => {
         const en = cfg.locale === 'en'
         const modeNote = r && r.mode === 'self'
           ? (en ? ' (files replaced' + (r.version ? ' → v' + r.version : '') + ')' : '（已替换插件文件' + (r.version ? ' → v' + r.version : '') + '）')
@@ -638,6 +677,11 @@ const apply = async (ctx) => {
           ? (en ? '✅ Updated' + modeNote + '. Restart dsh to apply.\n\n' : '✅ 更新完成' + modeNote + '，请重启 dsh 生效。\n\n')
           : (en ? '⚠️ Auto-update failed. Please copy the command and run it manually.\n\n' : '⚠️ 自动更新失败，请复制命令在终端手动执行。\n\n')
         setUpdLog(head + ((r && r.log) || ''))
+        if (r && r.ok && r.version) {
+          // 立刻把版本号刷新到 UI，避免更新后仍显示旧版本 / 仍提示有新版本
+          setUpd(Object.assign({}, upd, { local: r.version, latest: r.version, hasUpdate: false, checkedAt: Date.now() }))
+          state.updateInfo = Object.assign({}, state.updateInfo, { local: r.version, latest: r.version, hasUpdate: false })
+        }
       }).catch((err) => {
         setUpdLog((cfg.locale === 'en' ? '⚠️ Update request failed: ' : '⚠️ 更新请求失败：') + ((err && err.message) || String(err)) + '\n\n' + (cfg.locale === 'en' ? 'Fallback command:\n' : '可手动执行：\n') + (state.updateCmd || LOCAL_UPDATE_CMD))
       }).then(() => setUpdRunning(false))
@@ -737,6 +781,20 @@ const apply = async (ctx) => {
           onChange: (e) => { const v = parseInt(e.target.value, 10); update({ topmost: { durationMs: (isNaN(v) ? 0 : v) * 1000 } }) },
         }))
         : null,
+      ((cfg.topmost && cfg.topmost.mode) || 'card') !== 'off'
+        ? React.createElement(React.Fragment, null,
+          React.createElement('p', { className: 'dsh-tt-hint' }, t.topmostDurationHint),
+          React.createElement('label', { className: 'dsh-tt-check' },
+            React.createElement('input', {
+              type: 'checkbox',
+              checked: !!(cfg.topmost || {}).alsoSystemToast,
+              onChange: (e) => update({ topmost: { alsoSystemToast: e.target.checked } }),
+            }),
+            ' ' + t.alsoToast
+          ),
+          React.createElement('p', { className: 'dsh-tt-hint' }, t.alsoToastHint)
+        )
+        : null,
 
       selectRow(t.viewBehavior, null, React.createElement('select', { className: 'dsh-tt-select', value: cfg.viewBehavior, onChange: (e) => update({ viewBehavior: e.target.value }) }, vbOpts)),
       selectRow(t.taskLevel, null, React.createElement('select', { className: 'dsh-tt-select', value: cfg.categories.task, onChange: (e) => update({ category: 'task', level: e.target.value }) }, levelOpts)),
@@ -751,6 +809,7 @@ const apply = async (ctx) => {
         ' ' + t.onlyOther
       ),
       selectRow(t.autoDismiss, null, React.createElement('input', { className: 'dsh-tt-input', type: 'number', min: '0', step: '1', value: String(cfg.autoDismissMs), style: { width: '90px' }, onChange: (e) => { const v = parseInt(e.target.value, 10); update({ autoDismissMs: isNaN(v) ? 0 : v }) } })),
+      React.createElement('p', { className: 'dsh-tt-hint' }, t.autoDismissHint),
       React.createElement('div', { className: 'dsh-tt-actions-row' },
         React.createElement('button', { className: 'dsh-tt-btn-lg', onClick: () => { sendTest() } }, t.testBtn),
         React.createElement('button', { className: 'dsh-tt-btn-lg dsh-tt-btn-lg--ghost', onClick: () => doTopmostProbe() },
@@ -764,7 +823,13 @@ const apply = async (ctx) => {
       (((cfg.topmost && cfg.topmost.mode) || 'card') === 'card' && upd && upd.lastCard && upd.lastCard.ok === false)
         ? React.createElement('p', { className: 'dsh-tt-hint' },
           t.cardLastFail + '：' + String(upd.lastCard.error || '').slice(0, 160)
+          + (upd.lastCard.stage ? ' · stage=' + upd.lastCard.stage : '')
           + (upd.lastCard.at ? ' · ' + new Date(upd.lastCard.at).toLocaleTimeString() : ''))
+        : null,
+      (((cfg.topmost && cfg.topmost.mode) || 'card') === 'card' && upd && upd.lastCard && upd.lastCard.ok === false && upd.cardLog)
+        ? React.createElement(React.Fragment, null,
+          React.createElement('p', { className: 'dsh-tt-hint' }, t.cardLog + (upd.cardLogPath ? ' · ' + upd.cardLogPath : '')),
+          React.createElement('pre', { className: 'dsh-tt-log' }, String(upd.cardLog).slice(-1200)))
         : null,
 
       // ---------- 版本与更新 ----------
@@ -788,8 +853,10 @@ const apply = async (ctx) => {
       React.createElement('div', { className: 'dsh-tt-actions-row' },
         React.createElement('button', { className: 'dsh-tt-btn-lg dsh-tt-btn-lg--ghost', onClick: () => doCheck(), disabled: updChecking || updRunning }, updChecking ? t.checking : t.checkNow),
         React.createElement('button', { className: 'dsh-tt-btn-lg dsh-tt-btn-lg--ghost', onClick: () => doCopyCmd(), disabled: updRunning }, t.copyCmd),
-        React.createElement('button', { className: 'dsh-tt-btn-lg', onClick: () => doUpdate(), disabled: updRunning || updChecking }, updRunning ? t.updating : t.updateNow)
+        React.createElement('button', { className: 'dsh-tt-btn-lg', onClick: () => doUpdate(false), disabled: updRunning || updChecking }, updRunning ? t.updating : t.updateNow),
+        React.createElement('button', { className: 'dsh-tt-btn-lg dsh-tt-btn-lg--ghost', onClick: () => doUpdate(true), disabled: updRunning || updChecking }, t.forceReinstall)
       ),
+      React.createElement('p', { className: 'dsh-tt-hint' }, t.reinstallHint),
       updLog ? React.createElement('pre', { className: 'dsh-tt-log' }, updLog) : null,
       state.hostStatus === 'error' ? React.createElement('p', { className: 'dsh-tt-hint' }, '⚠️ ' + t.hostNeeded) : null
     )

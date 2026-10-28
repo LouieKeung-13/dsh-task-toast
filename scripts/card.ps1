@@ -22,10 +22,59 @@ param(
   [int]$Slot = 0,
   [string]$CallbackUrl = '',
   [string]$Id = '',
-  [int]$SelfTest = 0
+  [int]$SelfTest = 0,
+  [int]$Toast = 0,
+  [int]$ToastOnly = 0
 )
 
 $ErrorActionPreference = 'Stop'
+
+# ---------- 阶段打点 + 落盘追踪 ----------
+# 每个阶段都向 stdout 打一行 {"stage":"..."}，Host 据此判断卡片进度；
+# 同时追加写入 %LOCALAPPDATA%\dsh-task-toast\card.log，
+# 即使 stdout 采集失败也能事后看到到底卡在哪一步（v1.6.0 排障关键）。
+# 注意：$env:LOCALAPPDATA 在部分宿主（Electron Node 子进程）里是空的，
+# 必须逐级回退，否则缓存目录推导失败 → 每次都走 4~5 秒的即时编译。
+function Get-CacheDir {
+  $cand = @($env:LOCALAPPDATA, $env:APPDATA)
+  if ($env:USERPROFILE) {
+    $cand += (Join-Path $env:USERPROFILE 'AppData\Local')
+    $cand += (Join-Path $env:USERPROFILE 'AppData\Roaming')
+  }
+  $cand += $env:TEMP
+  $cand += [IO.Path]::GetTempPath()
+  foreach ($c in $cand) {
+    if (-not [string]::IsNullOrWhiteSpace($c)) { return $c }
+  }
+  return '.'
+}
+$script:BaseDir = Join-Path (Get-CacheDir) 'dsh-task-toast'
+$script:LogPath = ''
+try {
+  if (-not (Test-Path $script:BaseDir)) { New-Item -ItemType Directory -Path $script:BaseDir -Force | Out-Null }
+  $script:LogPath = Join-Path $script:BaseDir 'card.log'
+} catch { $script:LogPath = '' }
+$script:T0 = [DateTime]::UtcNow
+
+function Trace($stage, $extra) {
+  $ms = [int]([DateTime]::UtcNow - $script:T0).TotalMilliseconds
+  $line = '{"stage":"' + $stage + '","ms":' + $ms + ($(if ($extra) { ',' + $extra } else { '' })) + '}'
+  try { [Console]::Out.WriteLine($line); [Console]::Out.Flush() } catch { }
+  if ($script:LogPath) {
+    try {
+      $txt = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + ' ' + $line
+      if ($extra -and $extra.Length -gt 400) { $txt += ' (truncated)' }
+      [IO.File]::AppendAllText($script:LogPath, $txt + [Environment]::NewLine)
+    } catch { }
+  }
+}
+function TraceErr($stage, $msg) {
+  $m = [string]$msg
+  if ($m.Length -gt 400) { $m = $m.Substring(0, 400) }
+  Trace $stage ('"error":"' + ($m -replace '"', "'" -replace "`r|`n", ' ') + '"')
+}
+
+Trace 'boot' ('"pid":' + $PID + ',"selfTest":' + $SelfTest + ',"toast":' + $Toast)
 
 # ---------- 主题：auto 时读系统设置 ----------
 $dark = $false
@@ -682,21 +731,31 @@ $asms = $null
 try {
   $md5 = [System.Security.Cryptography.MD5]::Create()
   $hash = [BitConverter]::ToString($md5.ComputeHash([Text.Encoding]::UTF8.GetBytes($src))).Replace('-', '').Substring(0, 12)
-  $cacheDir = Join-Path $env:LOCALAPPDATA 'dsh-task-toast'
+  $cacheDir = $script:BaseDir
   if (-not (Test-Path $cacheDir)) { New-Item -ItemType Directory -Path $cacheDir -Force | Out-Null }
+  Trace 'cache-dir' ('"dir":"' + ($cacheDir -replace '\\', '\\') + '"')
   $dll = Join-Path $cacheDir ("DshToastCard-$hash.dll")
   if (-not (Test-Path $dll)) {
+    Trace 'compile-start' '"cached":false'
     # 先清理旧缓存，避免堆积
     Get-ChildItem -Path $cacheDir -Filter 'DshToastCard-*.dll' -ErrorAction SilentlyContinue |
       Remove-Item -Force -ErrorAction SilentlyContinue
     Add-Type -TypeDefinition $src -ReferencedAssemblies $referenced -OutputAssembly $dll -ErrorAction Stop
+    Trace 'compile-done' '"cached":false'
+  } else {
+    Trace 'compile-start' '"cached":true'
   }
-  $asms = Add-Type -Path $dll -PassThru -ErrorAction Stop
+  # 只需要把程序集载进来，不用 -PassThru（省一次反射枚举）
+  Add-Type -Path $dll -ErrorAction Stop
+  Trace 'compiled' ('"cached":' + $(if (Test-Path $dll) { 'true' } else { 'false' }))
 } catch {
+  TraceErr 'compile-fail' $_.Exception.Message
   # 缓存不可用（权限 / 路径）→ 退回即时编译
   try {
-    $asms = Add-Type -TypeDefinition $src -ReferencedAssemblies $referenced -PassThru -ErrorAction Stop
+    Add-Type -TypeDefinition $src -ReferencedAssemblies $referenced -ErrorAction Stop
+    Trace 'compiled' '"cached":false,"fallback":true'
   } catch {
+    TraceErr 'compile-fail-final' $_.Exception.Message
     [Console]::Error.WriteLine('dsh-task-toast card: 编译失败 ' + $_.Exception.Message)
     exit 1
   }
@@ -707,7 +766,10 @@ try {
 # 这样「卡片能不能用」不必等到真的来一条通知才知道。
 if ($SelfTest -eq 1) {
   try { [DshToast.Native]::SetDpiAware() } catch { }
-  '{"ok":true,"stage":"compiled","card":"DshToast.CardForm"}'
+  Trace 'selftest-ok' ''
+  # 兼容 Host 的旧判定式：必须含 "ok":true
+  [Console]::Out.WriteLine('{"ok":true,"stage":"compiled","card":"DshToast.CardForm"}')
+  [Console]::Out.Flush()
   exit 0
 }
 
@@ -730,14 +792,52 @@ $a.Slot = $Slot
 $a.CallbackUrl = $CallbackUrl
 $a.Id = $Id
 
+# ---------- 可选：同时发一条 Windows 原生通知（横幅 + 通知中心） ----------
+# 用户要求「弹卡片的同时也进系统通知栏」，这里用 WinRT Toast，
+# AppID 用 PowerShell 自带的注册 ID，横幅会直接浮在所有窗口之上并沉淀到通知中心。
+if ($Toast -eq 1) {
+  try {
+    [void][Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime]
+    [void][Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime]
+    [void][Windows.UI.Notifications.ToastNotification, Windows.UI.Notifications, ContentType = WindowsRuntime]
+
+    function Esc-Xml([string]$s) {
+      if ($null -eq $s) { return '' }
+      return $s.Replace('&', '&amp;').Replace('<', '&lt;').Replace('>', '&gt;').Replace('"', '&quot;').Replace("'", '&apos;')
+    }
+    $xmlText = '<toast scenario="reminder" duration="long"><visual><binding template="ToastGeneric">'
+    $xmlText += '<text>' + (Esc-Xml $Title) + '</text>'
+    $xmlText += '<text>' + (Esc-Xml $Body) + '</text>'
+    $xmlText += '</binding></visual><audio src="ms-winsoundevent:Notification.Default"/></toast>'
+
+    $doc = New-Object Windows.Data.Xml.Dom.XmlDocument
+    $doc.LoadXml($xmlText)
+    $tn = New-Object Windows.UI.Notifications.ToastNotification $doc
+    $appId = '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe'
+    [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($appId).Show($tn)
+    Trace 'toast-sent' ''
+  } catch {
+    TraceErr 'toast-fail' $_.Exception.Message
+  }
+}
+
+# 只要通知、不要卡片窗口（卡片起不来时的兜底通道）
+if ($ToastOnly -eq 1) { exit 0 }
+
 $form = New-Object -TypeName DshToast.CardForm -ArgumentList (,$a)
+Trace 'form-created' ''
 
 # 窗口真正显示后向 Host 回报一行 stdout —— Host 以此判定「卡片可用」，
 # 超时未回报（编译失败 / 启动异常）就会把通知转回应用内呈现，不会静默丢通知。
-$form.Add_Shown({ [Console]::Out.WriteLine('{"stage":"shown"}') })
+$form.Add_Shown({ Trace 'shown' '' })
 
 try {
+  Trace 'run-enter' ''
   [System.Windows.Forms.Application]::Run($form)
+  Trace 'run-exit' ''
+} catch {
+  TraceErr 'run-fail' $_.Exception.Message
+  [Console]::Error.WriteLine('dsh-task-toast card: ' + $_.Exception.Message)
 } finally {
   try { $form.Dispose() } catch { }
 }
