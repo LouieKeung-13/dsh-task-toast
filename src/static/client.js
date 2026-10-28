@@ -99,6 +99,8 @@ function ui(locale) {
     cardOk: '卡片已弹出，请看屏幕角落',
     cardFail: '卡片未能弹出',
     cardUnsupported: '当前环境不支持独立卡片（仅 Windows 桌面客户端）',
+    cardSelfTest: '卡片自检',
+    cardSelfOk: '通过（可正常弹出）',
   }
   const en = {
     settingsTitle: 'Task notifications',
@@ -159,6 +161,8 @@ function ui(locale) {
     cardOk: 'Card shown — check the screen corner',
     cardFail: 'Card could not be shown',
     cardUnsupported: 'Standalone card is unavailable here (Windows desktop client only)',
+    cardSelfTest: 'Card self-test',
+    cardSelfOk: 'passed (card can be shown)',
   }
   return locale === 'en' ? en : zh
 }
@@ -743,6 +747,10 @@ const apply = async (ctx) => {
           ((cfg.topmost && cfg.topmost.mode) || 'card') === 'card' ? t.cardTest : t.topmostTest)
       ),
       topmostMsg ? React.createElement('p', { className: 'dsh-tt-hint' }, topmostMsg) : null,
+      (((cfg.topmost && cfg.topmost.mode) || 'card') === 'card' && upd && upd.cardSelfTest && upd.cardSelfTest !== 'pending')
+        ? React.createElement('p', { className: 'dsh-tt-hint' },
+          t.cardSelfTest + ' · ' + (upd.cardSelfTest === 'ok' ? t.cardSelfOk : String(upd.cardSelfTest).slice(0, 120)))
+        : null,
 
       // ---------- 版本与更新 ----------
       React.createElement('h3', { className: 'dsh-tt-section-title', style: { marginTop: '6px' } }, t.versionSection),

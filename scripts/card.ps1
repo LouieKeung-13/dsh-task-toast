@@ -21,7 +21,8 @@ param(
   [int]$Timeout = 10000,
   [int]$Slot = 0,
   [string]$CallbackUrl = '',
-  [string]$Id = ''
+  [string]$Id = '',
+  [int]$SelfTest = 0
 )
 
 $ErrorActionPreference = 'Stop'
@@ -696,6 +697,15 @@ try {
     [Console]::Error.WriteLine('dsh-task-toast card: 编译失败 ' + $_.Exception.Message)
     exit 1
   }
+}
+
+# ---------- 自检：只验证能否编译 / 载入，不创建任何窗口 ----------
+# Host 在启动几秒后会跑一次 `-SelfTest 1`，把结果写进 dsh 日志，
+# 这样「卡片能不能用」不必等到真的来一条通知才知道。
+if ($SelfTest -eq 1) {
+  try { [DshToast.Native]::SetDpiAware() } catch { }
+  '{"ok":true,"stage":"compiled","card":"DshToast.CardForm"}'
+  exit 0
 }
 
 # ---------- 启动前确保 DPI 感知 ----------
