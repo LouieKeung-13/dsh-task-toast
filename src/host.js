@@ -44,8 +44,24 @@ export default {
     const MAX_QUEUE = 200
     const MAX_WAITERS = 32
     const WAIT_MS = 15000
+    // 突发合并：同一会话 / 同分类在窗口内的连续通知合并为一条（显示 ×N 计数），避免子代理并发刷屏
+    const GROUP_WINDOW_MS = 60 * 1000
+    const groupBuf = new Map()
 
     let config = normalizeConfig(DEFAULT_CONFIG)
+
+    // ---------- 通知历史（供「通知中心」回看；动态插件形态下为内存态，重启即清空） ----------
+    // 说明：动态宿主由 build-dynamic 剥离 import 后内联运行，无法稳定依赖 node:fs，
+    // 因此这里用内存数组承装历史；桌面静态版（lib/index.js）才有落盘持久化。
+    const memHistory = []
+    function loadHistory() { return memHistory.slice() }
+    function recordHistory(item) {
+      try {
+        memHistory.unshift({ seq: item.seq, category: item.category, sessionId: item.sessionId, title: item.title, body: item.body, ts: Date.now() })
+        if (memHistory.length > 200) memHistory.length = 200
+      } catch (e) { /* ignore */ }
+    }
+    function clearHistory() { memHistory.length = 0 }
 
     /** 入队一条通知（已按配置过滤），并唤醒所有挂起的长轮询等待者。 */
     function notify(category, sessionId, title, body) {
@@ -53,13 +69,31 @@ export default {
       const level = config.categories[category]
       if (!level || level === 'off') return
       if (config.onlyOtherSessions && activeSession && sessionId && sessionId === activeSession) return
+      const now = Date.now()
+      const key = category + '|' + (sessionId || '')
+      const g = groupBuf.get(key)
+      let replaceSeq = null
+      let groupCount = 1
+      if (g && now - g.at < GROUP_WINDOW_MS) {
+        replaceSeq = g.seq
+        groupCount = g.count + 1
+        g.at = now
+        g.count = groupCount
+      }
       const item = {
         seq: ++seq,
         category: category,
         sessionId: sessionId || null,
         title: String(title || '通知').slice(0, 120),
         body: String(body || '').slice(0, 300),
+        replaceSeq: replaceSeq,
+        groupCount: groupCount,
       }
+      if (!replaceSeq) groupBuf.set(key, { seq: item.seq, at: now, count: 1 })
+      else if (groupBuf.size > 200) {
+        for (const [k, v] of groupBuf) if (now - v.at > GROUP_WINDOW_MS) groupBuf.delete(k)
+      }
+      recordHistory(item)
       queue.push(item)
       if (queue.length > MAX_QUEUE) queue.shift()
       while (waiters.length) {
@@ -156,6 +190,10 @@ export default {
       }
       return { ok: true }
     })
+
+    // 通知中心：拉取 / 清空历史（持久化于本地文件，重启不丢）
+    harness.handle('tt/history', () => ({ ok: true, items: loadHistory() }))
+    harness.handle('tt/history/clear', () => { clearHistory(); return { ok: true } })
 
     // ---------- 事件源 ----------
     // 任务完成：subagent/end（completed）

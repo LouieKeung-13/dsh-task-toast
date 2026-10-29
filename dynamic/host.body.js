@@ -8,7 +8,7 @@
 // ctx / React / host 等宿主符号）。
 
 /** 插件版本（与 package.json 保持同步；Host 侧会优先读真实 package.json）。 */
-const VERSION = '1.8.0'
+const VERSION = '1.9.0'
 
 /** 上游仓库 owner/repo —— 更新检查与更新命令都基于它。 */
 const REPO = 'LouieKeung-13/dsh-task-toast'
@@ -70,6 +70,46 @@ const LEVELS = [
   { id: 'system', zh: '系统通知', en: 'System notification' },
 ]
 const LEVEL_IDS = LEVELS.map((l) => l.id)
+
+/** 配置预设：一键批量设置分类级别，降低 7×3 逐个配置的负担。 */
+const PRESETS = [
+  { id: 'important', zh: '仅重要', en: 'Important only' },
+  { id: 'all', zh: '全部开启', en: 'All on' },
+  { id: 'off', zh: '全部关闭', en: 'All off' },
+]
+const PRESET_IDS = PRESETS.map((p) => p.id)
+
+/**
+ * 按预设 id 计算分类级别映射（仅覆盖已知分类，不影响其它字段）。
+ * - important：任务完成 + 错误失败 = 应用内提示；插件更新 = 关闭（更新提醒低频、易打扰）
+ * - all：全部应用内提示
+ * - off：全部关闭
+ */
+function applyPreset(id) {
+  if (id === 'all') {
+    return { task: 'app', error: 'app', update: 'app' }
+  }
+  if (id === 'off') {
+    return { task: 'off', error: 'off', update: 'off' }
+  }
+  // important（默认）
+  return { task: 'app', error: 'app', update: 'off' }
+}
+
+/** 判断当前分类配置是否匹配某个预设（用于设置页回显已选预设）。 */
+function matchPreset(cats) {
+  if (!cats || typeof cats !== 'object') return ''
+  const want = (id) => applyPreset(id)
+  for (const id of PRESET_IDS) {
+    const p = want(id)
+    let same = true
+    for (const k of CATEGORY_KEYS) {
+      if ((cats[k] || 'off') !== (p[k] || 'off')) { same = false; break }
+    }
+    if (same) return id
+  }
+  return ''
+}
 
 /** 默认配置（与设置页首次打开时一致）。 */
 const DEFAULT_CONFIG = {
@@ -250,8 +290,24 @@ return {
     const MAX_QUEUE = 200
     const MAX_WAITERS = 32
     const WAIT_MS = 15000
+    // 突发合并：同一会话 / 同分类在窗口内的连续通知合并为一条（显示 ×N 计数），避免子代理并发刷屏
+    const GROUP_WINDOW_MS = 60 * 1000
+    const groupBuf = new Map()
 
     let config = normalizeConfig(DEFAULT_CONFIG)
+
+    // ---------- 通知历史（供「通知中心」回看；动态插件形态下为内存态，重启即清空） ----------
+    // 说明：动态宿主由 build-dynamic 剥离 import 后内联运行，无法稳定依赖 node:fs，
+    // 因此这里用内存数组承装历史；桌面静态版（lib/index.js）才有落盘持久化。
+    const memHistory = []
+    function loadHistory() { return memHistory.slice() }
+    function recordHistory(item) {
+      try {
+        memHistory.unshift({ seq: item.seq, category: item.category, sessionId: item.sessionId, title: item.title, body: item.body, ts: Date.now() })
+        if (memHistory.length > 200) memHistory.length = 200
+      } catch (e) { /* ignore */ }
+    }
+    function clearHistory() { memHistory.length = 0 }
 
     /** 入队一条通知（已按配置过滤），并唤醒所有挂起的长轮询等待者。 */
     function notify(category, sessionId, title, body) {
@@ -259,13 +315,31 @@ return {
       const level = config.categories[category]
       if (!level || level === 'off') return
       if (config.onlyOtherSessions && activeSession && sessionId && sessionId === activeSession) return
+      const now = Date.now()
+      const key = category + '|' + (sessionId || '')
+      const g = groupBuf.get(key)
+      let replaceSeq = null
+      let groupCount = 1
+      if (g && now - g.at < GROUP_WINDOW_MS) {
+        replaceSeq = g.seq
+        groupCount = g.count + 1
+        g.at = now
+        g.count = groupCount
+      }
       const item = {
         seq: ++seq,
         category: category,
         sessionId: sessionId || null,
         title: String(title || '通知').slice(0, 120),
         body: String(body || '').slice(0, 300),
+        replaceSeq: replaceSeq,
+        groupCount: groupCount,
       }
+      if (!replaceSeq) groupBuf.set(key, { seq: item.seq, at: now, count: 1 })
+      else if (groupBuf.size > 200) {
+        for (const [k, v] of groupBuf) if (now - v.at > GROUP_WINDOW_MS) groupBuf.delete(k)
+      }
+      recordHistory(item)
       queue.push(item)
       if (queue.length > MAX_QUEUE) queue.shift()
       while (waiters.length) {
@@ -362,6 +436,10 @@ return {
       }
       return { ok: true }
     })
+
+    // 通知中心：拉取 / 清空历史（持久化于本地文件，重启不丢）
+    harness.handle('tt/history', () => ({ ok: true, items: loadHistory() }))
+    harness.handle('tt/history/clear', () => { clearHistory(); return { ok: true } })
 
     // ---------- 事件源 ----------
     // 任务完成：subagent/end（completed）

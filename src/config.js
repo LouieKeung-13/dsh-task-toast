@@ -7,7 +7,7 @@
 // ctx / React / host 等宿主符号）。
 
 /** 插件版本（与 package.json 保持同步；Host 侧会优先读真实 package.json）。 */
-export const VERSION = '1.8.0'
+export const VERSION = '1.9.0'
 
 /** 上游仓库 owner/repo —— 更新检查与更新命令都基于它。 */
 export const REPO = 'LouieKeung-13/dsh-task-toast'
@@ -69,6 +69,46 @@ export const LEVELS = [
   { id: 'system', zh: '系统通知', en: 'System notification' },
 ]
 export const LEVEL_IDS = LEVELS.map((l) => l.id)
+
+/** 配置预设：一键批量设置分类级别，降低 7×3 逐个配置的负担。 */
+export const PRESETS = [
+  { id: 'important', zh: '仅重要', en: 'Important only' },
+  { id: 'all', zh: '全部开启', en: 'All on' },
+  { id: 'off', zh: '全部关闭', en: 'All off' },
+]
+export const PRESET_IDS = PRESETS.map((p) => p.id)
+
+/**
+ * 按预设 id 计算分类级别映射（仅覆盖已知分类，不影响其它字段）。
+ * - important：任务完成 + 错误失败 = 应用内提示；插件更新 = 关闭（更新提醒低频、易打扰）
+ * - all：全部应用内提示
+ * - off：全部关闭
+ */
+export function applyPreset(id) {
+  if (id === 'all') {
+    return { task: 'app', error: 'app', update: 'app' }
+  }
+  if (id === 'off') {
+    return { task: 'off', error: 'off', update: 'off' }
+  }
+  // important（默认）
+  return { task: 'app', error: 'app', update: 'off' }
+}
+
+/** 判断当前分类配置是否匹配某个预设（用于设置页回显已选预设）。 */
+export function matchPreset(cats) {
+  if (!cats || typeof cats !== 'object') return ''
+  const want = (id) => applyPreset(id)
+  for (const id of PRESET_IDS) {
+    const p = want(id)
+    let same = true
+    for (const k of CATEGORY_KEYS) {
+      if ((cats[k] || 'off') !== (p[k] || 'off')) { same = false; break }
+    }
+    if (same) return id
+  }
+  return ''
+}
 
 /** 默认配置（与设置页首次打开时一致）。 */
 export const DEFAULT_CONFIG = {

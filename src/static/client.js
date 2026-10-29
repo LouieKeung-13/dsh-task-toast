@@ -68,6 +68,9 @@ function ui(locale) {
     dismiss: '忽略',
     copied: '已复制',
     copy: '复制结果',
+    // ---- 配置预设 ----
+    preset: '快速预设',
+    presetHint: '一键批量设置分类级别，降低逐项配置的负担。',
     // ---- 更新提醒 ----
     versionSection: '版本与更新',
     currentVersion: '当前版本',
@@ -93,7 +96,7 @@ function ui(locale) {
     modeCard: '独立置顶小卡片',
     modeWindow: '提升 dsh 窗口',
     modeOff: '关闭（仅应用内）',
-    topmostHint: '「独立小卡片」会创建一个脱离 dsh 的无边框浮窗，只占屏幕一角、压在所有应用之上、不抢焦点；「提升 dsh 窗口」则把整个 dsh 窗口顶到最前面。仅 Windows 桌面客户端支持。',
+    topmostHint: '「独立小卡片」会创建一个脱离 dsh 的浮窗，只占屏幕一角、压在所有应用之上、不抢焦点：Windows 为无边框置顶浮窗，macOS 为系统原生通知（同样跨应用置顶并沉淀到通知中心）；「提升 dsh 窗口」则把整个 dsh 窗口顶到最前面，仅 Windows 桌面客户端支持。',
     topmostDuration: '卡片停留（秒，0 = 跟随浮层）',
     topmostDurationHint: '只作用于独立卡片 / 窗口置顶的时长，与「应用内浮层自动消失」是两条独立计时，不冲突。鼠标停在卡片上时会暂停倒计时。',
     alsoToast: '同时发送 Windows 系统通知（通知中心留痕）',
@@ -145,6 +148,9 @@ function ui(locale) {
     dismiss: 'Dismiss',
     copied: 'Copied',
     copy: 'Copy result',
+    // ---- Presets ----
+    preset: 'Quick preset',
+    presetHint: 'Batch-set category levels in one tap to avoid configuring each one by hand.',
     // ---- Update ----
     versionSection: 'Version & updates',
     currentVersion: 'Installed',
@@ -170,7 +176,7 @@ function ui(locale) {
     modeCard: 'Standalone floating card',
     modeWindow: 'Raise the dsh window',
     modeOff: 'Off (in-app only)',
-    topmostHint: '“Standalone card” creates a borderless window detached from dsh — one corner of the screen, above every app, without stealing focus. “Raise the dsh window” brings the whole dsh window to the front instead. Windows desktop client only.',
+    topmostHint: '“Standalone card” creates a window detached from dsh — one corner of the screen, above every app, without stealing focus: a borderless topmost window on Windows, or a native system notification on macOS (also cross-app topmost, kept in Notification Center). “Raise the dsh window” brings the whole dsh window to the front instead — Windows desktop client only.',
     topmostDuration: 'Card lifetime (seconds, 0 = follow overlay)',
     topmostDurationHint: 'Only controls the standalone card / topmost window. It is a separate timer from “auto-dismiss” — no conflict. The countdown pauses while the cursor rests on the card.',
     alsoToast: 'Also send a Windows notification (kept in Action Center)',
@@ -740,6 +746,10 @@ const apply = async (ctx) => {
       if (patch.checkUpdate !== undefined) next.checkUpdate = patch.checkUpdate
       if (patch.topmost) next.topmost = Object.assign({}, cfg.topmost, patch.topmost)
       if (patch.category) next.categories[patch.category] = patch.level
+      if (patch.preset) {
+        const pc = applyPreset(patch.preset)
+        for (const k of CATEGORY_KEYS) next.categories[k] = pc[k]
+      }
       state.config = next
       setCfg(next)
       api.config(next).catch(() => { /* ignore */ })
@@ -859,6 +869,7 @@ const apply = async (ctx) => {
     const themeOpts = THEMES.map((tm) => React.createElement('option', { key: tm.id, value: tm.id }, cfg.locale === 'en' ? tm.en : tm.zh))
     const vbOpts = VIEW_BEHAVIORS.map((b) => React.createElement('option', { key: b.id, value: b.id }, cfg.locale === 'en' ? b.en : b.zh))
     const levelOpts = LEVELS.map((l) => React.createElement('option', { key: l.id, value: l.id }, cfg.locale === 'en' ? l.en : l.zh))
+    const presetOpts = PRESETS.map((p) => React.createElement('option', { key: p.id, value: p.id }, cfg.locale === 'en' ? p.en : p.zh))
 
     // 连接状态文案（诊断用）
     const statusText =
@@ -946,6 +957,7 @@ const apply = async (ctx) => {
       selectRow(t.taskLevel, null, React.createElement('select', { className: 'dsh-tt-select', value: cfg.categories.task, onChange: (e) => update({ category: 'task', level: e.target.value }) }, levelOpts)),
       selectRow(t.errorLevel, null, React.createElement('select', { className: 'dsh-tt-select', value: cfg.categories.error, onChange: (e) => update({ category: 'error', level: e.target.value }) }, levelOpts)),
       selectRow(t.updateLevel, null, React.createElement('select', { className: 'dsh-tt-select', value: cfg.categories.update, onChange: (e) => update({ category: 'update', level: e.target.value }) }, levelOpts)),
+      selectRow(t.preset, t.presetHint, React.createElement('select', { className: 'dsh-tt-select', value: matchPreset(cfg.categories) || '', onChange: (e) => { if (e.target.value) update({ preset: e.target.value }) } }, [React.createElement('option', { key: '', value: '' }, cfg.locale === 'en' ? '— custom —' : '— 自定义 —')].concat(presetOpts))),
       React.createElement('label', { className: 'dsh-tt-check' },
         React.createElement('input', { type: 'checkbox', checked: !!cfg.showSummary, onChange: (e) => update({ showSummary: e.target.checked }) }),
         ' ' + t.showSummary

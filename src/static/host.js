@@ -31,10 +31,16 @@ try {
   TOPMOST_SCRIPT = join(dirname(fileURLToPath(import.meta.url)), '..', 'scripts', 'topmost.ps1')
 } catch (e) { /* 无法解析时置顶功能自动跳过 */ }
 
-// 独立卡片脚本位置：scripts/card.ps1（WinForms 无边框置顶浮窗）
+// 独立卡片脚本位置：scripts/card.ps1（Windows：WinForms 无边框置顶浮窗）
 let CARD_SCRIPT = ''
 try {
   CARD_SCRIPT = join(dirname(fileURLToPath(import.meta.url)), '..', 'scripts', 'card.ps1')
+} catch (e) { /* ignore */ }
+
+// macOS 独立卡片脚本：scripts/card-mac.sh（osascript 原生通知，跨应用置顶 + 通知中心留痕）
+let CARD_SCRIPT_MAC = ''
+try {
+  CARD_SCRIPT_MAC = join(dirname(fileURLToPath(import.meta.url)), '..', 'scripts', 'card-mac.sh')
 } catch (e) { /* ignore */ }
 
 // 插件根目录（lib/index.js 的上一级），自更新时用于定位要覆盖的文件
@@ -51,6 +57,7 @@ const SELF_UPDATE_FILES = [
   'lib/config.js',
   'scripts/topmost.ps1',
   'scripts/card.ps1',
+  'scripts/card-mac.sh',
 ]
 
 // 仓库里存的是 LF（core.autocrlf=true 会在提交时把 CRLF 归一成 LF），
@@ -406,8 +413,22 @@ export default {
     }
 
     function cardSupported() {
-      if (process.platform !== 'win32' || !CARD_SCRIPT) return false
-      try { return existsSync(CARD_SCRIPT) } catch (e) { return false }
+      if (process.platform === 'win32') {
+        if (!CARD_SCRIPT) return false
+        try { return existsSync(CARD_SCRIPT) } catch (e) { return false }
+      }
+      if (process.platform === 'darwin') {
+        if (!CARD_SCRIPT_MAC) return false
+        try { return existsSync(CARD_SCRIPT_MAC) } catch (e) { return false }
+      }
+      return false
+    }
+
+    /** 当前平台的独立卡片脚本路径（win32 → card.ps1，darwin → card-mac.sh）。 */
+    function cardScriptForPlatform() {
+      if (process.platform === 'win32') return CARD_SCRIPT
+      if (process.platform === 'darwin') return CARD_SCRIPT_MAC
+      return ''
     }
 
     /** 取一个空闲槽位，让多张卡片竖向堆叠而不是叠在一起。 */
@@ -460,18 +481,37 @@ export default {
     }
 
     /**
+     * 按当前平台拼出「独立卡片」启动命令：
+     *   · win32  → powershell card.ps1 <flags>
+     *   · darwin → bash card-mac.sh <flags>（原生通知，跨应用置顶 + 通知中心）
+     * 返回 null 表示当前平台不支持（调用方应回退应用内呈现）。
+     */
+    function cardSpawnArgs(item, slot, extra) {
+      const flags = cardArgs(item, slot, extra)
+      if (process.platform === 'win32') return { cmd: 'powershell', args: flags }
+      if (process.platform === 'darwin') {
+        const sc = cardScriptForPlatform()
+        if (!sc) return null
+        return { cmd: 'bash', args: [sc].concat(flags) }
+      }
+      return null
+    }
+
+    /**
      * 只发一条 Windows 原生通知（横幅 + 通知中心），不创建卡片窗口。
      * 用途：① 用户勾选「同时发系统通知」；② 卡片起不来时的兜底通道。
      */
     function spawnToast(item) {
       if (!cardSupported() || disposed) return
+      const sp = cardSpawnArgs(item, 0, process.platform === 'win32' ? ['-ToastOnly', '1', '-Toast', '1'] : [])
+      if (!sp) return
       try {
-        const child = spawn('powershell', cardArgs(item, 0, ['-ToastOnly', '1', '-Toast', '1']), { windowsHide: true })
+        const child = spawn(sp.cmd, sp.args, { windowsHide: true })
         let err = ''
         if (child.stderr) child.stderr.on('data', (d) => { err += String(d) })
         child.on('error', () => { /* ignore */ })
         child.on('close', (code) => {
-          if (code === 0) console.log('[dsh-task-toast] 已发送 Windows 系统通知：' + (item.title || ''))
+          if (code === 0) console.log('[dsh-task-toast] 已发送系统通知：' + (item.title || ''))
           else console.warn('[dsh-task-toast] 系统通知未发出（code=' + code + '）' + (err ? '：' + err.slice(-200) : ''))
         })
       } catch (e) { /* ignore */ }
@@ -489,12 +529,13 @@ export default {
         }
         cardSeq += 1
 
-        const extra = config.topmost && config.topmost.alsoSystemToast ? ['-Toast', '1'] : []
-        const args = cardArgs(item, slot, extra)
+        const extra = config.topmost && config.topmost.alsoSystemToast && process.platform === 'win32' ? ['-Toast', '1'] : []
+        const sp = cardSpawnArgs(item, slot, extra)
+        if (!sp) { cardItems.delete(id); resolve({ ok: false, error: 'card spawn args unavailable' }); return }
 
         let child
         try {
-          child = spawn('powershell', args, { windowsHide: true })
+          child = spawn(sp.cmd, sp.args, { windowsHide: true })
         } catch (e) {
           cardItems.delete(id)
           resolve({ ok: false, error: 'spawn: ' + ((e && e.message) || e), stderr: '' })
@@ -588,10 +629,14 @@ export default {
       if (!cardSupported()) { cardSelfTest = 'unsupported'; return }
       let child
       try {
-        child = spawn('powershell', [
-          '-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass',
-          '-File', CARD_SCRIPT, '-SelfTest', '1',
-        ], { windowsHide: true })
+        if (process.platform === 'darwin') {
+          child = spawn('bash', [cardScriptForPlatform(), '-SelfTest', '1'], { windowsHide: true })
+        } else {
+          child = spawn('powershell', [
+            '-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass',
+            '-File', CARD_SCRIPT, '-SelfTest', '1',
+          ], { windowsHide: true })
+        }
       } catch (e) {
         cardSelfTest = 'spawn error: ' + ((e && e.message) || e)
         console.warn('[dsh-task-toast] 卡片自检无法启动：' + cardSelfTest)

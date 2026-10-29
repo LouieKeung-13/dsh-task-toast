@@ -7,7 +7,7 @@
 //
 // 作为动态插件使用时，请粘贴构建产物 dynamic/client.body.js（npm run build:dynamic）。
 // 本文件使用动态插件环境提供的全局 React / host / styles。
-import { POSITIONS, VIEW_BEHAVIORS, LOCALES, LEVELS, DEFAULT_CONFIG } from './config.js'
+import { POSITIONS, VIEW_BEHAVIORS, LOCALES, LEVELS, CATEGORY_KEYS, PRESETS, applyPreset, matchPreset, DEFAULT_CONFIG } from './config.js'
 
 // ---------- 多语言 UI 文案 ----------
 function ui(locale) {
@@ -31,6 +31,15 @@ function ui(locale) {
     later: '稍后',
     dismiss: '忽略',
     copy: '复制结果',
+    // ---- 通知中心 ----
+    history: '通知历史',
+    historyTitle: '通知历史',
+    clear: '清空',
+    historyEmpty: '暂无历史记录',
+    replay: '重播',
+    // ---- 配置预设 ----
+    preset: '快速预设',
+    presetHint: '一键批量设置分类级别，降低逐项配置的负担。',
   }
   const en = {
     settingsTitle: 'Task notifications',
@@ -52,6 +61,15 @@ function ui(locale) {
     later: 'Later',
     dismiss: 'Dismiss',
     copy: 'Copy result',
+    // ---- Notification center ----
+    history: 'History',
+    historyTitle: 'Notification history',
+    clear: 'Clear',
+    historyEmpty: 'No history yet',
+    replay: 'Replay',
+    // ---- Presets ----
+    preset: 'Quick preset',
+    presetHint: 'Batch-set category levels in one tap to avoid configuring each one by hand.',
   }
   return locale === 'en' ? en : zh
 }
@@ -65,6 +83,8 @@ export default {
       toastCounter: 0,
       activeSession: null,
       disposed: false,
+      focusedSeq: null, // 键盘焦点所在的 toast（←→/↑↓ 切换，Enter 查看，Esc 忽略）
+      seqLocal: 0,     // 本地回放/预览用的递减序号（避免与 Host 的 seq 冲突）
     }
     const listeners = new Set()
     const emitter = {
@@ -104,16 +124,45 @@ export default {
       }
     }
 
+    // 相对时间（通知历史列表用）
+    function timeAgo(ts) {
+      if (!ts) return ''
+      const s = Math.max(0, Math.floor((Date.now() - ts) / 1000))
+      if (s < 60) return s + 's'
+      if (s < 3600) return Math.floor(s / 60) + 'm'
+      if (s < 86400) return Math.floor(s / 3600) + 'h'
+      return Math.floor(s / 86400) + 'd'
+    }
+
     function addToast(item, lifetime) {
-      state.toastCounter += 1
-      const toast = {
-        id: item.seq, ts: state.toastCounter, category: item.category,
+      const base = {
+        id: item.seq, ts: ++state.toastCounter, category: item.category,
         title: item.title, body: item.body, sessionId: item.sessionId,
-        expanded: false, lifetime: typeof lifetime === 'number' ? lifetime : (state.config.autoDismissMs || 0),
+        expanded: false, groupCount: item.groupCount || 1,
+        lifetime: typeof lifetime === 'number' ? lifetime : (state.config.autoDismissMs || 0),
       }
-      state.toasts = state.toasts.concat(toast).slice(-8)
+      // 同会话 / 同分类的突发通知：用 replaceSeq 指向原 toast，原地更新而非新增，避免刷屏
+      if (item.replaceSeq != null) {
+        const idx = state.toasts.findIndex((t) => t.id === item.replaceSeq)
+        if (idx >= 0) {
+          const old = state.toasts[idx]
+          base.id = old.id
+          base.expanded = old.expanded
+          base.groupCount = item.groupCount || old.groupCount || 1
+          state.toasts = state.toasts.slice()
+          state.toasts[idx] = base
+          emitter.emit()
+          if (base.lifetime > 0 && timer) {
+            const tm = snoozeTimers.get(old.id)
+            if (tm) { try { clearTimeout(tm) } catch (e) { /* ignore */ } snoozeTimers.delete(old.id) }
+            timer.timeout(() => dismissToast(base.id), base.lifetime)
+          }
+          return
+        }
+      }
+      state.toasts = state.toasts.concat(base).slice(-8)
       emitter.emit()
-      if (toast.lifetime > 0 && timer) timer.timeout(() => dismissToast(toast.id), toast.lifetime)
+      if (base.lifetime > 0 && timer) timer.timeout(() => dismissToast(base.id), base.lifetime)
     }
 
     function showSystem(item) {
@@ -174,19 +223,65 @@ export default {
 
     function ToastStack() {
       const [items, setItems] = React.useState([])
+      const [histOpen, setHistOpen] = React.useState(false)
+      const [history, setHistory] = React.useState([])
       React.useEffect(() => emitter.subscribe(() => setItems(state.toasts)), [])
       const cfg = state.config
       const t = ui(cfg.locale)
-      if (!items.length) return React.createElement('div', { className: 'dsh-tt-host dsh-tt-host--' + cfg.position })
-      const nodes = items.map((toast) => {
-        const canNavigate = cfg.viewBehavior === 'navigate' && !!toast.sessionId
-        const onView = () => {
-          if (canNavigate) { openSession(toast.sessionId); dismissToast(toast.id) }
-          else { toast.expanded = !toast.expanded; emitter.emit() }
+      const themeClass = cfg.theme === 'light' ? ' dsh-tt-theme-light' : cfg.theme === 'dark' ? ' dsh-tt-theme-dark' : ''
+
+      function loadHistory() { host.call('tt/history', {}).then((r) => { if (r && Array.isArray(r.items)) setHistory(r.items) }).catch(() => {}) }
+      function toggleHistory() { const next = !histOpen; setHistOpen(next); if (next) loadHistory() }
+      function clearHistory() { host.call('tt/history/clear', {}).then(() => setHistory([])).catch(() => {}) }
+      function replayHist(h) {
+        state.seqLocal -= 1
+        addToast({ seq: state.seqLocal, category: h.category, sessionId: h.sessionId, title: h.title, body: h.body, groupCount: 1 }, 10000)
+      }
+      function doView(toast) {
+        const canNav = cfg.viewBehavior === 'navigate' && !!toast.sessionId
+        if (canNav) { openSession(toast.sessionId); dismissToast(toast.id) }
+        else { const idx = state.toasts.findIndex((t2) => t2.id === toast.id); if (idx >= 0) { state.toasts[idx] = Object.assign({}, state.toasts[idx], { expanded: !state.toasts[idx].expanded }); emitter.emit() } }
+      }
+
+      // 键盘可达性：←→/↑↓ 在 toast 间移动焦点，Enter 查看，Esc 忽略（输入框聚焦时让位给原生输入）
+      React.useEffect(() => {
+        function onKey(e) {
+          const el = (typeof document !== 'undefined') ? document.activeElement : null
+          if (el && (el.tagName === 'INPUT' || el.tagName === 'SELECT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) return
+          const toasts = state.toasts
+          if (!toasts.length) return
+          if (e.key === 'ArrowRight' || e.key === 'ArrowLeft' || e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+            e.preventDefault()
+            let idx = toasts.findIndex((t2) => t2.id === state.focusedSeq)
+            if (idx < 0) idx = toasts.length - 1
+            else idx = (e.key === 'ArrowUp' || e.key === 'ArrowLeft')
+              ? (idx - 1 + toasts.length) % toasts.length
+              : (idx + 1) % toasts.length
+            state.focusedSeq = toasts[idx].id
+            emitter.emit()
+          } else if (e.key === 'Enter') {
+            const tt = toasts.find((x) => x.id === state.focusedSeq) || toasts[toasts.length - 1]
+            if (tt) { e.preventDefault(); doView(tt) }
+          } else if (e.key === 'Escape') {
+            const tt = toasts.find((x) => x.id === state.focusedSeq) || toasts[toasts.length - 1]
+            if (tt) { e.preventDefault(); dismissToast(tt.id); if (state.focusedSeq === tt.id) state.focusedSeq = null; emitter.emit() }
+          }
         }
+        if (typeof document !== 'undefined') document.addEventListener('keydown', onKey)
+        return () => { if (typeof document !== 'undefined') document.removeEventListener('keydown', onKey) }
+      }, [])
+
+      function renderToast(toast) {
+        const canNavigate = cfg.viewBehavior === 'navigate' && !!toast.sessionId
+        const onView = () => doView(toast)
         const bodyClass = 'dsh-tt-body' + (toast.expanded ? ' dsh-tt-body--expanded' : '')
+        const focused = state.focusedSeq === toast.id
+        const focusStyle = focused ? { outline: '2px solid #0a84ff', outlineOffset: '2px' } : null
         const children = [
-          React.createElement('div', { key: 'title', className: 'dsh-tt-title' }, toast.title || ''),
+          React.createElement('div', { key: 'title', className: 'dsh-tt-title' },
+            toast.title || '',
+            toast.groupCount > 1 ? React.createElement('span', { key: 'g', className: 'dsh-tt-group-badge' }, '×' + toast.groupCount) : null
+          ),
           (cfg.showSummary || toast.category === 'test') ? React.createElement('div', { key: 'body', className: bodyClass }, toast.body || '') : null,
           toast.expanded ? React.createElement('button', {
             key: 'copy', className: 'dsh-tt-btn dsh-tt-btn--primary', style: { flex: 'none', marginTop: '2px' },
@@ -201,10 +296,44 @@ export default {
         return React.createElement('div', {
           key: String(toast.id),
           className: 'dsh-tt-toast dsh-tt-' + String(toast.category || 'x'),
+          style: focusStyle,
           title: toast.sessionId ? t.viewResult + ' · ' + toast.sessionId : '',
         }, children)
-      })
-      return React.createElement('div', { className: 'dsh-tt-host dsh-tt-host--' + cfg.position }, nodes)
+      }
+
+      // 常驻铃铛（通知中心入口，随时可回看历史）
+      const bellBtn = React.createElement('button', {
+        key: 'bell', className: 'dsh-tt-bell', onClick: toggleHistory, title: t.history,
+      }, [
+        React.createElement('svg', { key: 'i', viewBox: '0 0 24 24', width: '18', height: '18', fill: 'currentColor' },
+          React.createElement('path', { d: 'M12 2a6 6 0 0 0-6 6v3.586l-1.707 1.707A1 1 0 0 0 5 15h14a1 1 0 0 0 .707-1.707L18 11.586V8a6 6 0 0 0-6-6zm0 20a3 3 0 0 0 3-3H9a3 3 0 0 0 3 3z' })),
+        history.length ? React.createElement('span', { key: 'b', className: 'dsh-tt-bell-badge' }, String(history.length > 99 ? '99+' : history.length)) : null,
+      ])
+
+      const histPanel = histOpen ? React.createElement('div', { key: 'hist', className: 'dsh-tt-hist' },
+        React.createElement('div', { key: 'h', className: 'dsh-tt-hist-head' },
+          React.createElement('span', null, t.historyTitle),
+          React.createElement('button', { key: 'c', className: 'dsh-tt-btn', style: { flex: 'none', fontSize: '11px', padding: '3px 8px' }, onClick: clearHistory }, t.clear)
+        ),
+        history.length === 0
+          ? React.createElement('div', { key: 'e', className: 'dsh-tt-hist-empty' }, t.historyEmpty)
+          : React.createElement('div', { key: 'l', className: 'dsh-tt-hist-list' },
+            history.map((h) => React.createElement('div', { key: 'hi' + h.seq, className: 'dsh-tt-hist-item' },
+              React.createElement('div', { key: 't', className: 'dsh-tt-hist-title' }, h.title || ''),
+              React.createElement('div', { key: 'b', className: 'dsh-tt-hist-body' }, (h.body || '').slice(0, 80)),
+              React.createElement('div', { key: 'm', className: 'dsh-tt-hist-meta' },
+                React.createElement('span', null, timeAgo(h.ts)),
+                h.sessionId ? React.createElement('button', { key: 'v', className: 'dsh-tt-btn', style: { flex: 'none', fontSize: '11px', padding: '2px 8px' }, onClick: () => openSession(h.sessionId) }, t.viewResult) : null,
+                React.createElement('button', { key: 'r', className: 'dsh-tt-btn', style: { flex: 'none', fontSize: '11px', padding: '2px 8px' }, onClick: () => replayHist(h) }, t.replay)
+              )
+            ))
+          )
+      ) : null
+
+      const children = [bellBtn]
+      if (histPanel) children.push(histPanel)
+      for (const toast of items) children.push(renderToast(toast))
+      return React.createElement('div', { className: 'dsh-tt-host dsh-tt-host--' + cfg.position + themeClass }, children)
     }
 
     function SettingsPage() {
@@ -220,6 +349,10 @@ export default {
         if (patch.onlyOtherSessions !== undefined) next.onlyOtherSessions = patch.onlyOtherSessions
         if (patch.autoDismissMs !== undefined) next.autoDismissMs = patch.autoDismissMs
         if (patch.category) next.categories[patch.category] = patch.level
+        if (patch.preset) {
+          const pc = applyPreset(patch.preset)
+          for (const k of CATEGORY_KEYS) next.categories[k] = pc[k]
+        }
         state.config = next
         setCfg(next)
         host.call('tt/config', { config: next }).catch(() => { /* ignore */ })
@@ -237,6 +370,7 @@ export default {
       const langOpts = LOCALES.map((l) => React.createElement('option', { key: l.id, value: l.id }, cfg.locale === 'en' ? l.en : l.zh))
       const vbOpts = VIEW_BEHAVIORS.map((b) => React.createElement('option', { key: b.id, value: b.id }, cfg.locale === 'en' ? b.en : b.zh))
       const levelOpts = LEVELS.map((l) => React.createElement('option', { key: l.id, value: l.id }, cfg.locale === 'en' ? l.en : l.zh))
+      const presetOpts = PRESETS.map((p) => React.createElement('option', { key: p.id, value: p.id }, cfg.locale === 'en' ? p.en : p.zh))
       return React.createElement('div', { className: 'dsh-tt-settings' },
         React.createElement('h3', { className: 'dsh-tt-section-title' }, t.settingsTitle),
         React.createElement('p', { className: 'dsh-tt-hint' }, t.settingsHint),
@@ -248,6 +382,7 @@ export default {
         selectRow(t.viewBehavior, null, React.createElement('select', { className: 'dsh-tt-select', value: cfg.viewBehavior, onChange: (e) => update({ viewBehavior: e.target.value }) }, vbOpts)),
         selectRow(t.taskLevel, null, React.createElement('select', { className: 'dsh-tt-select', value: cfg.categories.task, onChange: (e) => update({ category: 'task', level: e.target.value }) }, levelOpts)),
         selectRow(t.errorLevel, null, React.createElement('select', { className: 'dsh-tt-select', value: cfg.categories.error, onChange: (e) => update({ category: 'error', level: e.target.value }) }, levelOpts)),
+        selectRow(t.preset, t.presetHint, React.createElement('select', { className: 'dsh-tt-select', value: matchPreset(cfg.categories) || '', onChange: (e) => { if (e.target.value) update({ preset: e.target.value }) } }, [React.createElement('option', { key: '', value: '' }, cfg.locale === 'en' ? '— custom —' : '— 自定义 —')].concat(presetOpts))),
         React.createElement('label', { className: 'dsh-tt-check' },
           React.createElement('input', { type: 'checkbox', checked: !!cfg.showSummary, onChange: (e) => update({ showSummary: e.target.checked }) }), ' ' + t.showSummary
         ),
@@ -308,6 +443,19 @@ export default {
 .dsh-tt-actions-row { display: flex; gap: 8px; }
 .dsh-tt-btn-lg { background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-primary); border: 1px solid var(--dsw-alias-border-l1); border-radius: 6px; padding: 6px 12px; font-size: 12px; cursor: pointer; }
 .dsh-tt-btn-lg:hover { border-color: var(--dsw-alias-border-l2); }
+.dsh-tt-group-badge { display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 8px; background: var(--dsw-alias-bg-layer-3, rgba(120,120,128,0.2)); font-size: 11px; font-weight: 600; }
+.dsh-tt-bell { pointer-events: auto; align-self: flex-end; display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 34px; border-radius: 50%; background: var(--dsw-alias-bg-overlay); border: 1px solid var(--dsw-alias-border-l1); box-shadow: 0 4px 16px rgba(0,0,0,0.18); color: var(--dsw-alias-label-primary); cursor: pointer; position: relative; }
+.dsh-tt-bell:hover { border-color: var(--dsw-alias-border-l2); }
+.dsh-tt-bell-badge { position: absolute; top: -4px; right: -4px; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; background: #FF453A; color: #fff; font-size: 10px; line-height: 16px; text-align: center; font-weight: 600; }
+.dsh-tt-hist { pointer-events: auto; width: 100%; max-height: 320px; overflow: auto; background: var(--dsw-alias-bg-overlay); border: 1px solid var(--dsw-alias-border-l1); border-radius: 14px; box-shadow: 0 10px 40px rgba(0,0,0,0.18); color: var(--dsw-alias-label-primary); padding: 8px; display: flex; flex-direction: column; gap: 6px; box-sizing: border-box; }
+.dsh-tt-hist-head { display: flex; align-items: center; justify-content: space-between; font-weight: 600; font-size: 13px; }
+.dsh-tt-hist-empty { font-size: 12px; opacity: 0.6; padding: 8px 4px; }
+.dsh-tt-hist-list { display: flex; flex-direction: column; gap: 6px; }
+.dsh-tt-hist-item { border: 1px solid var(--dsw-alias-border-l1); border-radius: 10px; padding: 6px 8px; display: flex; flex-direction: column; gap: 3px; }
+.dsh-tt-hist-title { font-size: 12.5px; font-weight: 600; }
+.dsh-tt-hist-body { font-size: 11.5px; opacity: 0.7; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dsh-tt-hist-meta { display: flex; align-items: center; gap: 8px; font-size: 11px; opacity: 0.6; }
+.dsh-tt-hist-meta .dsh-tt-btn { flex: none; }
 `)
   },
 }
