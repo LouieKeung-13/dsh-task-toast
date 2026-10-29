@@ -306,12 +306,17 @@ function injectCss() {
   background: var(--tt-control) !important; color: var(--tt-fg) !important;
   border: 1px solid var(--tt-border); border-radius: 8px; padding: 4px 8px; font-size: 12px; max-width: 180px;
 }
-.dsh-tt-settings .dsh-tt-select option { background: var(--tt-surface); color: var(--tt-fg); }
+/* 下拉弹层是 Electron 原生控件，弹层底色为系统白色，不能沿用页面深色文字（--tt-fg 在深色下是浅色=看不见）。
+   改为固定实色 + 高对比文字，并随深色主题翻转，保证两种主题下选项都看得见。 */
+.dsh-tt-settings .dsh-tt-select option { background: #ffffff; color: #1c1c1e; }
+@media (prefers-color-scheme: dark) { .dsh-tt-settings .dsh-tt-select option { background: #2c2c2e; color: #f5f5f7; } }
 .dsh-tt-check { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--tt-fg); cursor: pointer; }
 .dsh-tt-actions-row { display: flex; gap: 8px; flex-wrap: wrap; }
-/* 面板按钮 = 单色（与浮层主按钮同一套，不跟随强调色） */
-.dsh-tt-btn-lg { background: var(--dsw-alias-label-primary, #1c1c1e); color: var(--dsw-alias-bg-primary, #fff); border: 1px solid transparent; border-radius: 8px; padding: 6px 14px; font-size: 12.5px; font-weight: 500; cursor: pointer; }
+/* 面板主按钮：固定高对比配色（与浮层主按钮同一套），不依赖 dsh 令牌，
+   避免 label-primary / bg-primary 在某些情况下解析为接近同色而导致按钮文字消失 */
+.dsh-tt-btn-lg { background: #1c1c1e; color: #fff; border: 1px solid transparent; border-radius: 8px; padding: 6px 14px; font-size: 12.5px; font-weight: 600; cursor: pointer; }
 .dsh-tt-btn-lg:hover { filter: brightness(1.25); }
+@media (prefers-color-scheme: dark) { .dsh-tt-btn-lg { background: rgba(245,245,247,0.92); color: #1c1c1e; } .dsh-tt-btn-lg:hover { filter: brightness(0.92); } }
 .dsh-tt-btn-lg--ghost { background: var(--tt-control); color: var(--tt-fg); border-color: var(--tt-border); }
 .dsh-tt-btn-lg:disabled { opacity: 0.5; cursor: default; filter: none; }
 .dsh-tt-log { margin: 0; max-height: 220px; overflow: auto; white-space: pre-wrap; word-break: break-all; padding: 8px 10px; border-radius: 8px; background: var(--tt-surface); border: 1px solid var(--tt-border); color: var(--tt-fg); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11.5px; line-height: 1.5; }
