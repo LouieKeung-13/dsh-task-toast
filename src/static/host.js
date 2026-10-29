@@ -486,13 +486,35 @@ export default {
      *   · darwin → bash card-mac.sh <flags>（原生通知，跨应用置顶 + 通知中心）
      * 返回 null 表示当前平台不支持（调用方应回退应用内呈现）。
      */
+    /** macOS 独立卡片启动参数：card-mac.sh 只认这些 flag（会忽略 -NoProfile/-File 等 PowerShell 专属项）。 */
+    function cardMacArgs(item) {
+      const id = String(item.seq)
+      const t = i18n(config)
+      return [
+        '-Title', String(item.title || '').replace(/[\r\n]+/g, ' ').slice(0, 120),
+        '-Body', String(item.body || '').replace(/[\r\n]+/g, ' ').slice(0, 300),
+        '-Locale', config.locale === 'en' ? 'en' : 'zh',
+        '-Position', String(config.position || 'bottom-right'),
+        '-Theme', String(config.theme || 'auto'),
+        '-Accent', config.accent || '#007AFF',
+        '-Timeout', String(cardTimeoutMs()),
+        '-Slot', '0',
+        '-Id', id,
+        '-BtnView', t.viewResult,
+        '-BtnLater', t.later,
+        '-BtnIgnore', t.dismiss,
+      ]
+    }
+
     function cardSpawnArgs(item, slot, extra) {
       const flags = cardArgs(item, slot, extra)
       if (process.platform === 'win32') return { cmd: 'powershell', args: flags }
       if (process.platform === 'darwin') {
         const sc = cardScriptForPlatform()
         if (!sc) return null
-        return { cmd: 'bash', args: [sc].concat(flags) }
+        // 不再复用 PowerShell 的 flags（-NoProfile/-File 等会被 shell 解析器当作未知单参吃掉），
+        // 改用 card-mac.sh 专属的干净 flag 列表。
+        return { cmd: 'bash', args: [sc].concat(cardMacArgs(item)) }
       }
       return null
     }

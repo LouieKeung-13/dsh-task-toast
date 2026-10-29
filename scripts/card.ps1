@@ -257,6 +257,9 @@ namespace DshToast
                 PlaceWindow();
                 Native.RoundCorners(Handle);
                 Native.SetDark(Handle, A.Dark);
+                // v1.9.1: start the auto-dismiss countdown. Previously life.Start() was missing,
+                // so the timer never ran and the card never auto-closed.
+                try { if (life != null) life.Start(); } catch { }
             }
             catch { }
         }

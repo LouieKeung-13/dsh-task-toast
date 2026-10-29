@@ -8,7 +8,7 @@
 // ctx / React / host 等宿主符号）。
 
 /** 插件版本（与 package.json 保持同步；Host 侧会优先读真实 package.json）。 */
-const VERSION = '1.9.0'
+const VERSION = '1.9.1'
 
 /** 上游仓库 owner/repo —— 更新检查与更新命令都基于它。 */
 const REPO = 'LouieKeung-13/dsh-task-toast'
@@ -138,7 +138,7 @@ const DEFAULT_CONFIG = {
   topmost: {
     mode: 'card',
     enabled: true,          // 兼容字段，等价于 mode !== 'off'
-    durationMs: 12000,      // 卡片自动消失 / 置顶保持时长（ms），0 = 跟随浮层自动消失时长
+    durationMs: 0,          // 卡片自动消失 / 置顶保持时长（ms），0 = 跟随浮层自动消失时长(autoDismissMs)
     matchTitle: 'DeepSeek', // 按 PID 找不到窗口时的兜底匹配（窗口标题包含）
     // 弹卡片的同时也发一条 Windows 原生通知（横幅 + 通知中心）。
     // 卡片起不来时它还是兜底通道 —— 通知不会因为卡片失败而丢。
