@@ -1,0 +1,3 @@
+- insert:
+    - id: task-toast
+      name: 'dsh-task-toast'

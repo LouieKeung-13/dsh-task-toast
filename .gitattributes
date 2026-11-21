@@ -1,0 +1,5 @@
+* text=auto eol=lf
+
+# Keep Windows PowerShell scripts as UTF-8 with BOM and CRLF.
+*.ps1 -text !eol whitespace=cr-at-eol
+*.png binary !eol

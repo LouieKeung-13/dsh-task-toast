@@ -1,0 +1,67 @@
+{
+  "name": "dsh-task-toast",
+  "version": "1.0.0",
+  "description": "Cross-platform DSH task notifications with result summaries, session navigation, floating cards, bilingual UI, history, and built-in updates.",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./host": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./config": "./lib/config.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-ui-slots"
+      ]
+    }
+  },
+  "files": [
+    "lib",
+    "src",
+    "scripts",
+    "cordis.patch.yml",
+    "README.md",
+    "README.zh.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build:dynamic": "node scripts/build-dynamic.mjs",
+    "build:static": "node scripts/build-static.mjs",
+    "build": "node scripts/build-dynamic.mjs && node scripts/build-static.mjs",
+    "check": "node scripts/build-dynamic.mjs && node scripts/build-static.mjs",
+    "test": "node scripts/build-dynamic.mjs && node scripts/build-static.mjs && node tests/smoke-update.mjs && node tests/focus-suppression.mjs && node tests/notification-content.mjs && node tests/browser-notifications.mjs && node tests/sound-cues.mjs && node tests/product-integrity.mjs"
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "cordis",
+    "plugin",
+    "notification",
+    "toast",
+    "task"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/LouieKeung-13/dsh-task-toast.git"
+  },
+  "bugs": {
+    "url": "https://github.com/LouieKeung-13/dsh-task-toast/issues"
+  },
+  "homepage": "https://github.com/LouieKeung-13/dsh-task-toast#readme",
+  "author": {
+    "name": "LouieKeung-13",
+    "url": "https://github.com/LouieKeung-13"
+  }
+}

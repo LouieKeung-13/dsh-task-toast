@@ -1,0 +1,699 @@
+// 由 scripts/build-dynamic.mjs 生成 —— 可直接作为 cordis_define 的 code.host 函数体。
+// src/config.js
+// dsh-task-toast —— 共享配置与纯函数（位置 / 语言 / 查看行为 / 分类级别 / 默认值 / 配置归一化）。
+//
+// ⚠️ 构建说明：build-static.mjs 会把本文件内容内联进 lib/client.js（去掉 export 关键字，
+// 转为顶层 const/function）；build-dynamic.mjs 也会内联进 dynamic/*.body.js。
+// 因此这里只能包含无任何运行时依赖的常量与函数（不能 import 其他模块、不能引用
+// ctx / React / host 等宿主符号）。
+
+/** 插件版本（与 package.json 保持同步；Host 侧会优先读真实 package.json）。 */
+const VERSION = '1.0.0'
+
+/** 上游仓库 owner/repo —— 更新检查与更新命令都基于它。 */
+const REPO = 'LouieKeung-13/dsh-task-toast'
+
+/** dsh 安装源（更新命令用）。 */
+const INSTALL_SOURCE = 'github:' + REPO
+
+/** 浮层弹出位置（四角可选）。 */
+const POSITIONS = [
+  { id: 'top-left', zh: '左上角', en: 'Top-left' },
+  { id: 'top-right', zh: '右上角', en: 'Top-right' },
+  { id: 'bottom-left', zh: '左下角', en: 'Bottom-left' },
+  { id: 'bottom-right', zh: '右下角', en: 'Bottom-right' },
+]
+const POSITION_IDS = POSITIONS.map((p) => p.id)
+
+/** 「查看结果」点击后的行为。 */
+const VIEW_BEHAVIORS = [
+  { id: 'navigate', zh: '跳转到会话', en: 'Navigate to session' },
+  { id: 'expand', zh: '浮层内展开内容', en: 'Expand in overlay' },
+]
+const VIEW_BEHAVIOR_IDS = VIEW_BEHAVIORS.map((b) => b.id)
+
+/** 界面语言。 */
+const LOCALES = [
+  { id: 'zh', zh: '中文（简体）', en: 'Chinese (Simplified)' },
+  { id: 'en', zh: '英文', en: 'English' },
+]
+const LOCALE_IDS = LOCALES.map((l) => l.id)
+
+/** 浮层主题：auto 跟随系统 / light 浅色 / dark 深色。 */
+const THEMES = [
+  { id: 'auto', zh: '跟随系统', en: 'System' },
+  { id: 'light', zh: '浅色', en: 'Light' },
+  { id: 'dark', zh: '深色', en: 'Dark' },
+]
+const THEME_IDS = THEMES.map((t) => t.id)
+
+/** 置顶/卡片落地方式。 */
+const TOPMOST_MODES = [
+  { id: 'card', zh: '独立置顶小卡片', en: 'Standalone floating card' },
+  { id: 'window', zh: '提升 dsh 窗口', en: 'Raise the dsh window' },
+  { id: 'off', zh: '关闭（仅应用内）', en: 'Off (in-app only)' },
+]
+const TOPMOST_MODE_IDS = TOPMOST_MODES.map((m) => m.id)
+
+/** 通知分类：task = 任务完成；error = 错误失败；update = 插件自身有新版本。 */
+const CATEGORIES = [
+  { id: 'task', zh: '任务完成', en: 'Task completed', def: 'system' },
+  { id: 'error', zh: '错误失败', en: 'Error', def: 'off' },
+  { id: 'update', zh: '插件更新', en: 'Plugin update', def: 'app' },
+]
+const CATEGORY_KEYS = CATEGORIES.map((c) => c.id)
+
+/** 通知级别：off 关闭 / app 应用内提示 / system 操作系统通知。 */
+const LEVELS = [
+  { id: 'off', zh: '关闭', en: 'Off' },
+  { id: 'app', zh: '应用内提示', en: 'In-app toast' },
+  { id: 'system', zh: '系统通知', en: 'System notification' },
+]
+const LEVEL_IDS = LEVELS.map((l) => l.id)
+
+/** 通知音效：关闭 / 轻柔 / 清晰。使用 Web Audio 合成，不依赖平台音频文件。 */
+const SOUND_LEVELS = [
+  { id: 'off', zh: '关闭音效', en: 'Off' },
+  { id: 'soft', zh: '轻柔', en: 'Soft' },
+  { id: 'clear', zh: '清晰', en: 'Clear' },
+]
+const SOUND_LEVEL_IDS = SOUND_LEVELS.map((s) => s.id)
+
+/** 配置预设：一键批量设置三类通知级别，降低逐项配置的负担。 */
+const PRESETS = [
+  { id: 'important', zh: '仅重要', en: 'Important only' },
+  { id: 'all', zh: '全部开启', en: 'All on' },
+  { id: 'off', zh: '全部关闭', en: 'All off' },
+]
+const PRESET_IDS = PRESETS.map((p) => p.id)
+
+/**
+ * 按预设 id 计算分类级别映射（仅覆盖已知分类，不影响其它字段）。
+ * - important：任务完成 = 系统通知，错误失败 = 应用内提示，插件更新 = 关闭
+ * - all：全部开启；任务完成走系统通知，其它类别走应用内提示
+ * - off：全部关闭
+ */
+function applyPreset(id) {
+  if (id === 'all') {
+    return { task: 'system', error: 'app', update: 'app' }
+  }
+  if (id === 'off') {
+    return { task: 'off', error: 'off', update: 'off' }
+  }
+  // important（默认）：任务完成走系统通知，错误保留应用内提示。
+  return { task: 'system', error: 'app', update: 'off' }
+}
+
+/** 判断当前分类配置是否匹配某个预设（用于设置页回显已选预设）。 */
+function matchPreset(cats) {
+  if (!cats || typeof cats !== 'object') return ''
+  const want = (id) => applyPreset(id)
+  for (const id of PRESET_IDS) {
+    const p = want(id)
+    let same = true
+    for (const k of CATEGORY_KEYS) {
+      if ((cats[k] || 'off') !== (p[k] || 'off')) { same = false; break }
+    }
+    if (same) return id
+  }
+  return ''
+}
+
+/** 默认配置（与设置页首次打开时一致）。 */
+const DEFAULT_CONFIG = {
+  enabled: true,
+  locale: 'zh',
+  theme: 'auto',
+  followAccent: false,
+  position: 'bottom-right',
+  viewBehavior: 'navigate',
+  showSummary: true,
+  onlyOtherSessions: true,
+  autoDismissMs: 10000,
+  soundCues: 'off',
+  categories: {
+    task: 'system',
+    error: 'off',
+    update: 'app',
+  },
+  // ---- 更新检查 ----
+  checkUpdate: false,
+  updateIntervalHours: 6,
+  profile: '',              // 更新命令作用的 dsh profile；留空 = 从插件安装路径自动识别
+  // ---- 置顶（跨应用） ----
+  // mode = card   ：弹出**独立的无边框小卡片**（WinForms 原生窗口，真·置顶、不抢焦点）
+  // mode = window ：把 dsh 主窗口整体抬到所有应用之上（旧行为）
+  // mode = off    ：不出现在应用外，只保留应用内浮层
+  topmost: {
+    mode: 'off',
+    enabled: false,         // 兼容字段，等价于 mode !== 'off'
+    durationMs: 0,          // 卡片自动消失 / 置顶保持时长（ms），0 = 跟随浮层自动消失时长(autoDismissMs)
+    matchTitle: 'DeepSeek', // 按 PID 找不到窗口时的兜底匹配（窗口标题包含）
+  },
+  accent: '',               // 卡片强调色（#RRGGBB）；空 = 用默认蓝，followAccent 时由页面回传
+}
+
+/** 生成更新命令（两行，兼容不识别 `&&` 的 shell）。profile 省略时用 web。 */
+function buildUpdateCommand(profile) {
+  const p = profile && String(profile).trim() ? String(profile).trim() : 'web'
+  return [
+    'dsh plugin --profile ' + p + ' remove dsh-task-toast',
+    'dsh plugin --profile ' + p + ' add ' + INSTALL_SOURCE,
+  ].join('\n')
+}
+
+/** 语义化版本比较：a > b 返回 1，a < b 返回 -1，相等返回 0（容忍 v 前缀与缺失段）。 */
+function compareVersion(a, b) {
+  const pa = String(a == null ? '' : a).replace(/^v/i, '').split('.')
+  const pb = String(b == null ? '' : b).replace(/^v/i, '').split('.')
+  for (let i = 0; i < 3; i += 1) {
+    const na = parseInt(pa[i], 10)
+    const nb = parseInt(pb[i], 10)
+    const va = isNaN(na) ? 0 : na
+    const vb = isNaN(nb) ? 0 : nb
+    if (va > vb) return 1
+    if (va < vb) return -1
+  }
+  return 0
+}
+
+/** 仅接受合法级别，其余一律收敛为 'off'。 */
+function sanitizeLevel(v) {
+  return LEVEL_IDS.indexOf(v) >= 0 ? v : 'off'
+}
+
+/** 归一化置顶呈现方式。 */
+function normalizeTopmost(input) {
+  const src = input && typeof input === 'object' ? input : {}
+  const d = DEFAULT_CONFIG.topmost
+  let mode
+  if (TOPMOST_MODE_IDS.indexOf(src.mode) >= 0) mode = src.mode
+  else if (src.enabled === false) mode = 'off'
+  else mode = d.mode
+  return {
+    mode: mode,
+    enabled: mode !== 'off',
+    durationMs:
+      typeof src.durationMs === 'number'
+        ? Math.max(0, Math.min(120000, src.durationMs | 0))
+        : d.durationMs,
+    matchTitle:
+      typeof src.matchTitle === 'string'
+        ? src.matchTitle.slice(0, 60)
+        : d.matchTitle,
+  }
+}
+
+/**
+ * 把任意输入归一化为完整配置：
+ * - 非对象输入按空对象处理；
+ * - 显式声明且合法的字段保留，非法的收敛为默认值；
+ * - 未声明的分类回退到 DEFAULT_CONFIG 的默认值。
+ */
+function normalizeConfig(input) {
+  const src = input && typeof input === 'object' ? input : {}
+  const cats = {}
+  for (const k of CATEGORY_KEYS) {
+    const v = src.categories && src.categories[k]
+    cats[k] = v === undefined ? DEFAULT_CONFIG.categories[k] : sanitizeLevel(v)
+  }
+  const legacyTopmost = src.topmost && typeof src.topmost === 'object' ? src.topmost : {}
+  if (legacyTopmost.alsoSystemToast === true && legacyTopmost.mode !== 'off' && legacyTopmost.enabled !== false && cats.task === 'app') {
+    cats.task = 'system'
+  }
+  return {
+    enabled: src.enabled === undefined ? DEFAULT_CONFIG.enabled : src.enabled !== false,
+    locale: LOCALE_IDS.indexOf(src.locale) >= 0 ? src.locale : DEFAULT_CONFIG.locale,
+    theme: THEME_IDS.indexOf(src.theme) >= 0 ? src.theme : DEFAULT_CONFIG.theme,
+    followAccent: src.followAccent === undefined ? DEFAULT_CONFIG.followAccent : src.followAccent !== false,
+    position: POSITION_IDS.indexOf(src.position) >= 0 ? src.position : DEFAULT_CONFIG.position,
+    viewBehavior: VIEW_BEHAVIOR_IDS.indexOf(src.viewBehavior) >= 0 ? src.viewBehavior : DEFAULT_CONFIG.viewBehavior,
+    showSummary: src.showSummary === undefined ? DEFAULT_CONFIG.showSummary : src.showSummary !== false,
+    onlyOtherSessions:
+      src.onlyOtherSessions === undefined ? DEFAULT_CONFIG.onlyOtherSessions : src.onlyOtherSessions !== false,
+    autoDismissMs:
+      typeof src.autoDismissMs === 'number'
+        ? Math.max(2000, Math.min(60000, src.autoDismissMs | 0))
+        : DEFAULT_CONFIG.autoDismissMs,
+    soundCues: SOUND_LEVEL_IDS.indexOf(src.soundCues) >= 0 ? src.soundCues : DEFAULT_CONFIG.soundCues,
+    checkUpdate: false,
+    updateIntervalHours:
+      typeof src.updateIntervalHours === 'number'
+        ? Math.max(1, Math.min(72, src.updateIntervalHours | 0))
+        : DEFAULT_CONFIG.updateIntervalHours,
+    topmost: normalizeTopmost(src.topmost),
+    accent: typeof src.accent === 'string' && /^#[0-9a-fA-F]{6}$/.test(src.accent.trim())
+      ? src.accent.trim()
+      : DEFAULT_CONFIG.accent,
+    profile: typeof src.profile === 'string' ? src.profile.trim().slice(0, 40) : DEFAULT_CONFIG.profile,
+    categories: cats,
+  }
+}
+
+/** 深拷贝一份默认配置（避免共享引用被意外改写）。 */
+function cloneDefaultConfig() {
+  return normalizeConfig(DEFAULT_CONFIG)
+}
+// src/host.js
+// dsh-task-toast —— Host 半（DSH Node 进程，动态插件形态）。
+//
+// 监听任务完成 / 错误等需要提示的事件 → 按设置页下发的配置过滤 → 入队 →
+// 通过 tt/poll 长轮询推送给 Client（页面里的动态 client 模块）。
+// 事件来源与 dsh-session-notify 一致，作用域为当前会话及其子代理。
+//
+// 作为动态插件使用时，请粘贴构建产物 dynamic/host.body.js（npm run build:dynamic），
+// 或直接把本文件 export default 的对象字面量作为 cordis_define 的 code.host 函数体。
+
+// 多语言文案（标题 / 正文随 config.locale 切换）。
+const I18N = {
+  zh: {
+    taskDone: (s) => (s ? '任务完成 · ' + s : '任务完成'),
+    taskDoneBody: (s) => (s ? '会话「' + s + '」的任务已完成' : '会话任务已完成'),
+    error: (s) => (s ? '任务出错 · ' + s : '任务出错'),
+    errorBody: (s) => (s ? '会话「' + s + '」执行出错' : '会话执行出错'),
+    testTitle: '测试通知',
+    testBody: '这是一条来自任务提示插件的测试消息，用于验证通知链路。',
+  },
+  en: {
+    taskDone: (s) => (s ? 'Task completed · ' + s : 'Task completed'),
+    taskDoneBody: (s) => (s ? 'Task in “' + s + '” finished' : 'Session task finished'),
+    error: (s) => (s ? 'Task failed · ' + s : 'Task failed'),
+    errorBody: (s) => (s ? 'Task in “' + s + '” failed' : 'Session task failed'),
+    testTitle: 'Test notification',
+    testBody: 'This is a test message from the task-toast plugin, used to verify the pipeline.',
+  },
+}
+function i18n(cfg) {
+  const c = cfg && typeof cfg === 'object' ? cfg : DEFAULT_CONFIG
+  return I18N[c.locale === 'en' ? 'en' : 'zh']
+}
+
+return {
+  inject: ['timer'],
+  apply(ctx) {
+    const queue = []
+    const waiters = []
+    const titleCache = new Map()
+    let seq = 0
+    let disposed = false
+    const activeClients = new Map() // clientId -> { sessionId, foreground, at }
+    let legacyActiveSession = null // session-only clients keep the old same-session behavior
+    const ACTIVE_CLIENT_TTL_MS = 30000
+    const streamingSessions = new Set()
+    const MAX_QUEUE = 200
+    const MAX_WAITERS = 32
+    const WAIT_MS = 15000
+    // 突发合并：同一会话 / 同分类在窗口内的连续通知合并为一条（显示 ×N 计数），避免子代理并发刷屏
+    const GROUP_WINDOW_MS = 60 * 1000
+    const groupBuf = new Map()
+
+    let config = normalizeConfig(DEFAULT_CONFIG)
+
+    // ---------- 通知历史（供「通知中心」回看；动态插件形态下为内存态，重启即清空） ----------
+    // 说明：动态宿主由 build-dynamic 剥离 import 后内联运行，无法稳定依赖 node:fs，
+    // 因此这里用内存数组承装历史；桌面静态版（lib/index.js）才有落盘持久化。
+    const memHistory = []
+    function loadHistory() { return memHistory.slice() }
+    function recordHistory(item) {
+      try {
+        memHistory.unshift({ seq: item.seq, category: item.category, sessionId: item.sessionId, title: item.title, body: item.body, ts: Date.now() })
+        if (memHistory.length > 200) memHistory.length = 200
+      } catch (e) { /* ignore */ }
+    }
+    function clearHistory() { memHistory.length = 0 }
+
+    function pruneActiveClients(now) {
+      for (const [clientId, focus] of activeClients) {
+        if (now - focus.at >= ACTIVE_CLIENT_TTL_MS) activeClients.delete(clientId)
+      }
+    }
+
+    function updateActiveClient(args) {
+      const body = args && typeof args === 'object' ? args : {}
+      const clientId = typeof body.clientId === 'string' && body.clientId && body.clientId.length <= 128
+        ? body.clientId
+        : null
+      const sessionId = typeof body.sessionId === 'string' && body.sessionId ? body.sessionId : null
+      const foreground = typeof body.foreground === 'boolean' ? body.foreground : true
+      const now = Date.now()
+      pruneActiveClients(now)
+      if (!clientId) {
+        legacyActiveSession = sessionId
+        return sessionId
+      }
+      if (sessionId) {
+        activeClients.delete(clientId)
+        if (activeClients.size >= 128) {
+          const oldest = activeClients.keys().next().value
+          if (oldest !== undefined) activeClients.delete(oldest)
+        }
+        activeClients.set(clientId, { sessionId: sessionId, foreground: foreground, at: now })
+      } else activeClients.delete(clientId)
+      return sessionId
+    }
+
+    function snapshotFocus(sessionId) {
+      pruneActiveClients(Date.now())
+      let foreground = !!(sessionId && legacyActiveSession === sessionId)
+      if (sessionId) {
+        for (const focus of activeClients.values()) {
+          if (focus.foreground && focus.sessionId === sessionId) { foreground = true; break }
+        }
+      }
+      return { foreground: foreground, running: !!(sessionId && streamingSessions.has(sessionId)) }
+    }
+
+    function clearStreamingSession(sessionId) {
+      const focus = snapshotFocus(sessionId)
+      if (sessionId) streamingSessions.delete(sessionId)
+      return focus
+    }
+
+    /** 入队一条通知（已按配置过滤），并唤醒所有挂起的长轮询等待者。 */
+    function notify(category, sessionId, title, body, focusAtEvent) {
+      if (disposed || !config.enabled) return
+      const level = config.categories[category]
+      if (!level || level === 'off') return
+      const focus = focusAtEvent || snapshotFocus(sessionId)
+      const suppressForStreaming = focus.foreground && focus.running
+      if (config.onlyOtherSessions && focus.foreground && !suppressForStreaming) return
+      const now = Date.now()
+      const key = category + '|' + (sessionId || '')
+      const g = groupBuf.get(key)
+      let replaceSeq = null
+      let groupCount = 1
+      if (g && now - g.at < GROUP_WINDOW_MS) {
+        replaceSeq = g.seq
+        groupCount = g.count + 1
+        g.at = now
+        g.count = groupCount
+      }
+      const item = {
+        seq: ++seq,
+        category: category,
+        sessionId: sessionId || null,
+        title: String(title || '通知').slice(0, 120),
+        body: String(body || '').slice(0, 4000),
+        replaceSeq: replaceSeq,
+        groupCount: groupCount,
+      }
+      if (level === 'system') item.delivery = 'system'
+      if (!replaceSeq) groupBuf.set(key, { seq: item.seq, at: now, count: 1 })
+      else if (groupBuf.size > 200) {
+        for (const [k, v] of groupBuf) if (now - v.at > GROUP_WINDOW_MS) groupBuf.delete(k)
+      }
+      recordHistory(item)
+      if (suppressForStreaming) return
+      queue.push(item)
+      if (queue.length > MAX_QUEUE) queue.shift()
+      while (waiters.length) {
+        const w = waiters.shift()
+        try { if (w.dispose) w.dispose() } catch (e) { /* ignore */ }
+        try { w.resolve({ items: [item], seq: seq }) } catch (e) { /* ignore */ }
+      }
+    }
+
+    /** 读取会话标题用于通知文案（带进程内缓存，失败静默降级）。 */
+    async function readTitle(sessionId) {
+      if (!sessionId || disposed) return undefined
+      if (titleCache.has(sessionId)) return titleCache.get(sessionId)
+      const sessionQuery = ctx.get('sessionQuery')
+      if (!sessionQuery || typeof sessionQuery.readTitle !== 'function') return undefined
+      try {
+        const snap = await sessionQuery.readTitle(sessionId)
+        const t = snap && typeof snap.title === 'string' ? snap.title : undefined
+        if (t) titleCache.set(sessionId, t)
+        return t
+      } catch (e) {
+        return undefined
+      }
+    }
+
+    function safeMessage(err) {
+      if (err == null) return '未知错误'
+      if (typeof err === 'string') return err
+      if (err instanceof Error) return err.message || '未知错误'
+      try { return String(err) } catch (e) { return '未知错误' }
+    }
+
+    const SUMMARY_MAX_CHARS = 4000
+    const SUMMARY_READ_TIMEOUT_MS = 1000
+
+    function messageText(message) {
+      if (!message || message.role !== 'assistant' || !Array.isArray(message.content)) return ''
+      return message.content
+        .filter((block) => block && block.type === 'text' && typeof block.text === 'string')
+        .map((block) => block.text)
+        .join('')
+        .trim()
+    }
+
+    function excerptText(text) {
+      const value = typeof text === 'string' ? text.trim() : ''
+      return value ? value.slice(-SUMMARY_MAX_CHARS) : ''
+    }
+
+    function hasToolCall(message) {
+      if (Array.isArray(message && message.tool_calls) && message.tool_calls.length) return true
+      return !!(message && Array.isArray(message.content) && message.content.some((block) => block && (block.type === 'tool-call' || block.type === 'tool_call')))
+    }
+
+    function latestAssistantText(messages) {
+      if (!Array.isArray(messages)) return ''
+      let lastUser = -1
+      for (let i = 0; i < messages.length; i += 1) {
+        if (messages[i] && messages[i].role === 'user') lastUser = i
+      }
+      for (let i = messages.length - 1; i > lastUser; i -= 1) {
+        const message = messages[i]
+        if (!message || message.role !== 'assistant') continue
+        if (hasToolCall(message)) return ''
+        return excerptText(messageText(message))
+      }
+      return ''
+    }
+
+    async function readSummary(sessionId) {
+      if (!sessionId || disposed || !config.showSummary) return ''
+      try {
+        const sessions = ctx.get('sessions')
+        const session = sessions && typeof sessions.get === 'function' ? sessions.get(sessionId) : undefined
+        if (session && typeof session.deriveMessages === 'function') {
+          const messages = await Promise.resolve(session.deriveMessages())
+          const text = latestAssistantText(messages)
+          if (text) return text
+        }
+      } catch (e) { /* fall through to the read-only surface API */ }
+      try {
+        const sessionQuery = ctx.get('sessionQuery')
+        if (!sessionQuery || typeof sessionQuery.readSurface !== 'function') return ''
+        const snap = await sessionQuery.readSurface(sessionId)
+        const events = snap && Array.isArray(snap.events) ? snap.events : []
+        const messages = events.map((event) => {
+          if (!event) return null
+          if (event.type === 'user/message') return event.data
+          if (event.type === 'assistant/message') return event.data && event.data.message
+          return null
+        })
+        return latestAssistantText(messages)
+      } catch (e) { /* summary is optional; retain the generic notification */ }
+      return ''
+    }
+
+    function boundedRead(fn, fallback) {
+      return new Promise((resolve) => {
+        let settled = false
+        const finish = (value) => {
+          if (settled) return
+          settled = true
+          clearTimeout(timer)
+          resolve(value)
+        }
+        const timer = setTimeout(() => finish(fallback), SUMMARY_READ_TIMEOUT_MS)
+        Promise.resolve().then(fn).then(finish, () => finish(fallback))
+      })
+    }
+
+    function appendSummary(body, summary) {
+      const base = String(body || '').slice(0, SUMMARY_MAX_CHARS)
+      const extra = excerptText(summary)
+      if (!extra) return base
+      const separator = base ? '\n\n' : ''
+      const available = Math.max(0, SUMMARY_MAX_CHARS - base.length - separator.length)
+      return base + separator + (available > 0 ? extra.slice(-available) : '')
+    }
+
+    /** 异步读取标题和可选结果摘要，超时则保留通用文案。 */
+    function enqueueAfterTitle(category, sessionId, makeTitle, makeBody, focusAtEvent, includeSummary) {
+      const focus = focusAtEvent || snapshotFocus(sessionId)
+      const titleRead = boundedRead(() => readTitle(sessionId), undefined)
+      const summaryRead = includeSummary && config.showSummary
+        ? boundedRead(() => readSummary(sessionId), '')
+        : Promise.resolve('')
+      Promise.all([titleRead, summaryRead]).then(([title, summary]) => {
+        const body = includeSummary ? appendSummary(makeBody(title), summary) : makeBody(title)
+        notify(category, sessionId, makeTitle(title), body, focus)
+      }).catch(() => { /* ignore */ })
+    }
+
+    // ---------- RPC（Client -> Host，方向固定） ----------
+    harness.handle('tt/state', () => ({ config: config }))
+
+    harness.handle('tt/config', (args) => {
+      config = normalizeConfig(args && args.config)
+      return { ok: true, config: config }
+    })
+
+    harness.handle('tt/active', (args) => {
+      const activeSession = updateActiveClient(args)
+      return { ok: true, activeSession: activeSession }
+    })
+
+    harness.handle('tt/poll', (args) => new Promise((resolve) => {
+      const since = args && typeof args.since === 'number' ? args.since : 0
+      const pending = queue.filter((i) => i.seq > since)
+      if (pending.length) {
+        resolve({ items: pending, seq: seq })
+        return
+      }
+      if (waiters.length >= MAX_WAITERS || disposed) {
+        resolve({ items: [], seq: seq })
+        return
+      }
+      const w = { settled: false, resolve: null, dispose: null }
+      w.resolve = (value) => {
+        if (w.settled) return
+        w.settled = true
+        const idx = waiters.indexOf(w)
+        if (idx >= 0) waiters.splice(idx, 1)
+        try { if (w.dispose) w.dispose() } catch (e) { /* ignore */ }
+        resolve(value)
+      }
+      w.dispose = ctx.timer.timeout(() => {
+        w.resolve({ items: [], seq: seq })
+      }, WAIT_MS)
+      waiters.push(w)
+    }))
+
+    harness.handle('tt/test', (args) => {
+      const t = i18n(config)
+      const system = config.categories.task === 'system'
+      const sessionId = args && typeof args.sessionId === 'string' && args.sessionId.length <= 200
+        ? args.sessionId || null
+        : null
+      const item = {
+        seq: ++seq,
+        category: 'test',
+        sessionId: sessionId,
+        title: t.testTitle,
+        body: t.testBody,
+      }
+      if (system) item.delivery = 'system'
+      queue.push(item)
+      if (queue.length > MAX_QUEUE) queue.shift()
+      while (waiters.length) {
+        const w = waiters.shift()
+        try { if (w.dispose) w.dispose() } catch (e) { /* ignore */ }
+        try { w.resolve({ items: [item], seq: seq }) } catch (e) { /* ignore */ }
+      }
+      return system ? { ok: true, mode: 'system', queued: true } : { ok: true }
+    })
+
+    // 通知中心：拉取 / 清空历史（持久化于本地文件，重启不丢）
+    harness.handle('tt/history', () => ({ ok: true, items: loadHistory() }))
+    harness.handle('tt/history/clear', () => { clearHistory(); return { ok: true } })
+
+    // ---------- 事件源 ----------
+    // 任务完成：subagent/end（completed）
+    ctx.on('subagent/end', (info) => {
+      try {
+        const sessionId = info && info.id ? info.id : undefined
+        const stop = info && info.stopReason
+        if (stop === 'completed') {
+          const focusAtEvent = snapshotFocus(sessionId)
+          const t = i18n(config)
+          enqueueAfterTitle('task', sessionId, (s) => t.taskDone(s), (s) => t.taskDoneBody(s), focusAtEvent, true)
+        } else if (stop === 'error') {
+          const focusAtEvent = snapshotFocus(sessionId)
+          const t = i18n(config)
+          enqueueAfterTitle('error', sessionId, (s) => t.error(s), (s) => t.errorBody(s), focusAtEvent)
+        }
+      } catch (e) { console.error(e) }
+    })
+
+    // 任务完成：workflow/agent-end（completed / failed）
+    ctx.on('workflow/agent-end', (info, agent) => {
+      try {
+        const childId = agent && agent.childId ? agent.childId : undefined
+        const outcome = agent && agent.outcome
+        if (outcome === 'completed') {
+          const focusAtEvent = snapshotFocus(childId)
+          const t = i18n(config)
+          enqueueAfterTitle('task', childId, (s) => t.taskDone(s), (s) => t.taskDoneBody(s), focusAtEvent, true)
+        } else if (outcome === 'failed') {
+          const focusAtEvent = snapshotFocus(childId)
+          const t = i18n(config)
+          enqueueAfterTitle('error', childId, (s) => t.error(s), (s) => t.errorBody(s), focusAtEvent)
+        }
+      } catch (e) { console.error(e) }
+    })
+
+    // 任务完成：会话自身 running -> idle
+    ctx.on('agent/status', (payload) => {
+      try {
+        if (!payload) return
+        const sessionId = payload.agent ? payload.agent.id : undefined
+        if (sessionId && payload.status === 'running') streamingSessions.add(sessionId)
+        else if (payload.status === 'idle') {
+          const focusAtEvent = clearStreamingSession(sessionId)
+          const t = i18n(config)
+          enqueueAfterTitle('task', sessionId, (s) => t.taskDone(s), (s) => t.taskDoneBody(s), focusAtEvent, true)
+          return
+        }
+        if (payload.status !== 'idle') return
+      } catch (e) { console.error(e) }
+    })
+
+    // 后台任务：jobs.onJobDone（completed / failed）
+    const jobs = ctx.get('jobs')
+    if (jobs && typeof jobs.onJobDone === 'function') {
+      ctx.effect(() => jobs.onJobDone((snapshot, owner) => {
+        try {
+          const sessionId = (snapshot && snapshot.ownerSession) || (owner && owner.id) || undefined
+          const label = snapshot && typeof snapshot.label === 'string' ? snapshot.label : '后台任务'
+          const status = snapshot && snapshot.status
+          const t = i18n(config)
+          if (status === 'failed') {
+            const focusAtEvent = snapshotFocus(sessionId)
+            enqueueAfterTitle('error', sessionId, (s) => t.error(s), () => t.errorBody(label), focusAtEvent)
+          } else if (status === 'completed') {
+            const focusAtEvent = snapshotFocus(sessionId)
+            enqueueAfterTitle('task', sessionId, (s) => t.taskDone(s), () => t.taskDoneBody(label), focusAtEvent)
+          }
+        } catch (e) { /* ignore */ }
+      }))
+    }
+
+    // 会话出错：agent/error
+    ctx.on('agent/error', (payload) => {
+      try {
+        const sessionId = payload && payload.agent ? payload.agent.id : undefined
+        const focusAtEvent = clearStreamingSession(sessionId)
+        const t = i18n(config)
+        enqueueAfterTitle('error', sessionId, (s) => t.error(s), () => t.errorBody(safeMessage(payload && payload.error)), focusAtEvent)
+      } catch (e) { console.error(e) }
+    })
+
+    // 停止 / 更新时：结束所有挂起的长轮询，防止悬空 Promise
+    ctx.effect(() => {
+      return () => {
+        disposed = true
+        while (waiters.length) {
+          const w = waiters.shift()
+          try { if (w.dispose) w.dispose() } catch (e) { /* ignore */ }
+          try { w.resolve({ items: [], seq: seq }) } catch (e) { /* ignore */ }
+        }
+      }
+    })
+  },
+}
