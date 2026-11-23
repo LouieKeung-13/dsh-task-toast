@@ -650,8 +650,9 @@ namespace DshToast
                 HttpWebRequest req = (HttpWebRequest)WebRequest.Create(url);
                 req.Method = "POST";
                 req.ContentType = "application/json";
-                req.Timeout = 2000;
-                req.ReadWriteTimeout = 2000;
+                req.Headers["X-DSH-Task-Toast"] = "card-action";
+                req.Timeout = 8000;
+                req.ReadWriteTimeout = 8000;
                 req.Proxy = null;
                 byte[] bytes = Encoding.UTF8.GetBytes(json);
                 req.ContentLength = bytes.Length;

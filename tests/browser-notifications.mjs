@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { createForegroundReporter, openNotificationSession, watchNotificationSelection, systemNotificationExcerpt, deliverSystemNotification, requestSystemNotificationPermission, systemNotificationPermission } from '../src/browser-notifications.js'
+import { createNotificationSessionOpener, createForegroundReporter, openNotificationSession, watchNotificationSelection, systemNotificationExcerpt, deliverSystemNotification, requestSystemNotificationPermission, systemNotificationPermission } from '../src/browser-notifications.js'
 
 const item = { seq: 20, replaceSeq: 12, category: 'task', title: 'Task completed', body: 'Done', sessionId: 'workspace-session' }
 const statuses = []
@@ -130,4 +130,37 @@ const reportCount = reports.length
 win.dispatchEvent(new Event('focus'))
 await settle()
 assert.equal(reports.length, reportCount)
+// A minimized or tray-hidden Desktop must activate before its target is opened.
+for (const initialState of ['minimized', 'tray-hidden']) {
+  const actions = []
+  let windowState = initialState
+  let selected = 'previous-session'
+  const opener = createNotificationSessionOpener({
+    openSession(id) { assert.equal(windowState, 'visible'); selected = id; actions.push('open:' + id) },
+    selection: { getSnapshot: () => ({ sessionId: selected }) },
+  }, {}, async () => { actions.push('activate'); windowState = 'visible'; return { ok: true } })
+  deliverSystemNotification(item, {
+    NotificationApi: NotificationMock, onOpen: opener,
+    onFallback() { assert.fail('unexpected fallback') },
+    onStatus() {}, onNavigationFailure() { assert.fail('unexpected navigation failure') },
+  })
+  await banner.onclick()
+  assert.deepEqual(actions, ['activate', 'open:workspace-session'])
+  assert.equal(selected, item.sessionId)
+}
+const pendingActivations = []
+const openedAfterActivation = []
+const orderedOpen = createNotificationSessionOpener({ openSession(id) { openedAfterActivation.push(id) } }, {}, () => new Promise((resolve) => pendingActivations.push(resolve)))
+const oldClick = orderedOpen('older-target')
+const newClick = orderedOpen('latest-target')
+pendingActivations[1]({ ok: true })
+assert.equal(await newClick, true)
+pendingActivations[0]({ ok: true })
+assert.equal(await oldClick, true)
+assert.deepEqual(openedAfterActivation, ['latest-target'], 'a slow older activation must not overwrite the latest click')
+const failedActivationOpen = createNotificationSessionOpener({ openSession(id) { openedAfterActivation.push(id) } }, {}, async () => { throw Error('Host unreachable') })
+assert.equal(await failedActivationOpen('fallback-target'), false)
+assert.equal(openedAfterActivation.at(-1), 'fallback-target', 'retain navigation even when native activation fails, but report failure')
+assert.equal(await orderedOpen('already-restored-card', { restoreWindow: false }), true)
+assert.equal(pendingActivations.length, 2, 'Host-activated cards must not activate twice')
 console.log('✓ Browser notification permission, fallback, activation and foreground lifecycle')

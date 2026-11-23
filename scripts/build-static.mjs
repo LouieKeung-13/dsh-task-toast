@@ -18,6 +18,7 @@ mkdirSync(libDir, { recursive: true })
 
 // 1) config.js → lib/config.js（ESM）
 copyFileSync(join(root, 'src', 'config.js'), join(libDir, 'config.js'))
+copyFileSync(join(root, 'src', 'desktop-activation.js'), join(libDir, 'desktop-activation.js'))
 console.log('[build-static] 已生成 lib/config.js')
 
 // 2) static/host.js → lib/index.js（静态 Host 插件）

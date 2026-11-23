@@ -1,7 +1,7 @@
 {
   "name": "dsh-task-toast",
-  "version": "1.0.0",
-  "description": "Cross-platform DSH task notifications with result summaries, session navigation, floating cards, bilingual UI, history, and built-in updates.",
+  "version": "1.0.1",
+  "description": "DSH task notifications with result previews, source-session navigation, optional sounds, and dshmarket-managed updates.",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
@@ -37,7 +37,7 @@
     "build:static": "node scripts/build-static.mjs",
     "build": "node scripts/build-dynamic.mjs && node scripts/build-static.mjs",
     "check": "node scripts/build-dynamic.mjs && node scripts/build-static.mjs",
-    "test": "node scripts/build-dynamic.mjs && node scripts/build-static.mjs && node tests/smoke-update.mjs && node tests/focus-suppression.mjs && node tests/notification-content.mjs && node tests/browser-notifications.mjs && node tests/sound-cues.mjs && node tests/product-integrity.mjs"
+    "test": "node scripts/build-dynamic.mjs && node scripts/build-static.mjs && node tests/smoke-update.mjs && node tests/focus-suppression.mjs && node tests/notification-content.mjs && node tests/browser-notifications.mjs && node tests/desktop-activation.mjs && node tests/desktop-navigation.mjs && node tests/sound-cues.mjs && node tests/hot-reload.mjs && node tests/product-integrity.mjs"
   },
   "keywords": [
     "dsh",
@@ -50,7 +50,8 @@
   ],
   "license": "MIT",
   "engines": {
-    "node": ">=18"
+    "node": ">=18",
+    "dsh": "^0.2.2-rc.5"
   },
   "repository": {
     "type": "git",

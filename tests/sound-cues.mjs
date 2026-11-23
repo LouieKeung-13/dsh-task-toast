@@ -86,6 +86,13 @@ async function verifyClient(isStatic) {
   const originalAudio = globalThis.AudioContext
   const originalFetch = globalThis.fetch
   const originalNotification = globalThis.Notification
+  const originalDesktop = Object.getOwnPropertyDescriptor(globalThis, 'dshDesktop')
+  const originalLocation = Object.getOwnPropertyDescriptor(globalThis, 'location')
+  if (isStatic) {
+    Object.defineProperty(globalThis, 'dshDesktop', { configurable: true, value: { protocolVersion: 1 } })
+    Object.defineProperty(globalThis, 'location', { configurable: true, value: { protocol: 'dsh-app:' } })
+  }
+  const activations = []
   globalThis.AudioContext = AudioMock
   globalThis.Notification = NotificationMock
   let pendingPoll
@@ -121,8 +128,16 @@ async function verifyClient(isStatic) {
     return Promise.resolve({ ok: true })
   }
   const host = { call: (name, body) => request(name.replace('tt/', ''), body) }
-  globalThis.fetch = async (url, init) => ({ ok: true, json: () => request(url.replace('/dsh-task-toast/', ''), init?.body ? JSON.parse(init.body) : {}) })
-  const ctx = { get: (key) => ({ slots, sessions: {}, uiWorkspace, timer: { timeout() { return () => {} } } })[key], effect: (effect) => effects.push(effect()) }
+  globalThis.fetch = async (url, init) => {
+    if (url === '/dsh-task-toast/activate') {
+      assert.equal(init.method, 'POST')
+      assert.equal(init.headers['X-DSH-Task-Toast'], 'activate')
+      activations.push(url)
+    }
+    return { ok: true, json: () => request(url.replace('/dsh-task-toast/', ''), init?.body ? JSON.parse(init.body) : {}) }
+  }
+  const pluginPageVisits = []
+  const ctx = { get: (key) => ({ pluginNavigation: { openList() { pluginPageVisits.push('plugins') } }, slots, sessions: {}, uiWorkspace, timer: { timeout() { return () => {} } } })[key], effect: (effect) => effects.push(effect()) }
   let plugin
   if (isStatic) {
     let captured
@@ -141,8 +156,11 @@ async function verifyClient(isStatic) {
     let tree = render()
     if (isStatic) {
       const labels = nodes(tree).flatMap((node) => node.children.filter((value) => typeof value === 'string'))
-      assert.ok(labels.includes('插件文件'))
-      assert.ok(button(tree, '同步插件文件'))
+      assert.ok(labels.includes('插件更新'))
+      assert.ok(button(tree, '打开插件页'))
+      button(tree, '打开插件页').props.onClick()
+      assert.deepEqual(pluginPageVisits, ['plugins'])
+      assert.equal(labels.some((label) => label.includes('同步插件文件') || label.includes('复制安装命令')), false)
       assert.equal(labels.some((label) => /\bv?\d+\.\d+\.\d+\b/.test(label)), false, 'internal version numbers must not appear in settings')
     }
     let select = nodes(tree).find((node) => node.props['aria-label'] === '任务完成音效')
@@ -163,6 +181,7 @@ async function verifyClient(isStatic) {
     assert.equal(banner.options.body, 'Actual result')
     await banner.onclick()
     assert.deepEqual(openedSessions, ['target-session'], 'real uiWorkspace API must select the source conversation')
+    assert.equal(activations.length, isStatic ? 1 : 0, 'Desktop static bundle must restore the native window on notification click')
     await button(render(), '发送测试通知').props.onClick()
     await tick()
     assert.equal(testedSessions.at(-1), 'target-session', 'test notification links back to the selected session')
@@ -187,6 +206,10 @@ async function verifyClient(isStatic) {
     globalThis.AudioContext = originalAudio
     globalThis.fetch = originalFetch
     globalThis.Notification = originalNotification
+    if (originalDesktop) Object.defineProperty(globalThis, 'dshDesktop', originalDesktop)
+    else delete globalThis.dshDesktop
+    if (originalLocation) Object.defineProperty(globalThis, 'location', originalLocation)
+    else delete globalThis.location
     store.clear()
   }
 }

@@ -21,25 +21,9 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 process.env.DSH_TT_SKIP_SELF_UPDATE = '1'
 process.env.LOCALAPPDATA = mkdtempSync(join(os.tmpdir(), 'dsh-tt-smoke-'))
 
-// ---------- GitHub API mock ----------
-let upstreamVersion = '9.9.9'
-let upstreamSource = 'release'
+// No update request may bypass the Market into GitHub or a package manager.
 const requests = []
-globalThis.fetch = async (url) => {
-  requests.push(String(url))
-  if (upstreamSource === 'manifest') {
-    if (String(url).includes('/releases/latest')) return { ok: false, status: 404 }
-    if (String(url).includes('/tags?')) return { ok: true, json: async () => [] }
-    if (String(url).endsWith('/master/package.json')) return { ok: true, json: async () => ({ version: upstreamVersion }) }
-  }
-  if (String(url).includes('/releases/latest')) {
-    return {
-      ok: true,
-      json: async () => ({ tag_name: 'v' + upstreamVersion, html_url: 'https://github.com/x/y/releases/tag/v' + upstreamVersion, body: 'notes' }),
-    }
-  }
-  throw new Error('unexpected url: ' + url)
-}
+globalThis.fetch = async (url) => { requests.push(String(url)); throw Error('unexpected update network request') }
 
 // ---------- fake req / res ----------
 function makeReq(method, url, body) {
@@ -122,6 +106,7 @@ plugin.apply(ctx)
 const expected = [
   '/dsh-task-toast/state',
   '/dsh-task-toast/config',
+  '/dsh-task-toast/activate',
   '/dsh-task-toast/active',
   '/dsh-task-toast/test',
   '/dsh-task-toast/poll',
@@ -148,41 +133,18 @@ const PKG_VERSION = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
 const v0 = await callRoute(ctx.routes, '/dsh-task-toast/version', 'GET')
 assert.equal(v0.local, PKG_VERSION, '本地版本应等于 package.json 的 ' + PKG_VERSION + '，实际 ' + v0.local)
 assert.equal(v0.hasUpdate, false)
-assert.match(v0.updateCmd, /dsh plugin --profile web remove dsh-task-toast/)
-assert.match(v0.updateCmd, /dsh plugin --profile web add github:LouieKeung-13\/dsh-task-toast/)
-assert.equal(v0.profile, 'web', '测试环境不在 profiles/<name>/ 下，profile 应回落为 web')
-const { buildUpdateCommand } = await import(pathToFileURL(join(root, 'lib/config.js')).href)
-assert.match(buildUpdateCommand('desktop'), /--profile desktop remove/, '更新命令应跟随 profile 参数')
-console.log('✓ 更新命令跟随 profile（自动识别 / 可覆盖）')
-console.log('✓ /version 返回本地版本 v' + v0.local + ' 与更新命令')
-
-// Manual metadata checks remain diagnostic; normal startup does not poll release history.
-assert.equal(ctx.timers.some((timer) => timer.ms === 8000), false, 'stable install must not schedule a release-history check')
-const v1 = await callRoute(ctx.routes, '/dsh-task-toast/check-update', 'POST')
-assert.equal(v1.latest, upstreamVersion)
-assert.equal(v1.hasUpdate, true)
-assert.equal(v1.error, null)
-
-upstreamVersion = '0.9.0'
-const v2 = await callRoute(ctx.routes, '/dsh-task-toast/check-update', 'POST')
-assert.equal(v2.hasUpdate, false, 'a lower internal version must not offer an update')
-upstreamVersion = PKG_VERSION
-const v3 = await callRoute(ctx.routes, '/dsh-task-toast/check-update', 'POST')
-assert.equal(v3.hasUpdate, false, 'an equal internal version must not offer an update')
-
-upstreamSource = 'manifest'
-const manifestState = await callRoute(ctx.routes, '/dsh-task-toast/check-update', 'POST')
-assert.equal(manifestState.latest, PKG_VERSION)
-assert.equal(manifestState.error, null, 'no tags or Releases must still allow reading main-branch metadata')
-assert.ok(requests.some((url) => url.endsWith('/master/package.json')))
-console.log('✓ 手动元数据检查与无 Tag/Release 时的主分支回退')
-
-// ================= 5) 一键更新路由：只做非变更性注册检查 =================
-const updateRoute = ctx.routes['/dsh-task-toast/update']
-assert.ok(updateRoute, '/update route must be registered')
-assert.equal(typeof updateRoute.handler, 'function')
-assert.equal(updateRoute.handler.constructor.name, 'AsyncFunction')
-console.log('✓ /update route is registered; smoke tests never invoke CLI mutations')
+assert.equal(v0.updateProvider, 'dshmarket')
+assert.equal(v0.updateCmd, undefined)
+assert.equal(v0.profile, process.env.DSH_PROFILE || 'web')
+assert.equal(ctx.timers.some((timer) => timer.ms === 8000), false)
+for (const path of ['/dsh-task-toast/check-update', '/dsh-task-toast/update']) {
+  const res = makeRes()
+  await ctx.routes[path].handler(makeReq('POST', path, JSON.stringify({ force: true })), res)
+  assert.equal(res._r.code, 410, 'obsolete updater must not mutate installed files')
+  assert.deepEqual(parse(res), { ok: false, code: 'market-managed-updates', provider: 'dshmarket' })
+}
+assert.deepEqual(requests, [], 'plugin-owned updater must not contact upstream sources')
+console.log('✓ Updates are delegated to dshmarket; old updater endpoints refuse mutation')
 
 // ================= 6) 呈现方式 / 置顶 / 卡片（不触发真实窗口操作） =================
 const { normalizeConfig, DEFAULT_CONFIG } = await import(pathToFileURL(join(root, 'lib/config.js')).href)
@@ -243,8 +205,9 @@ console.log('✓ /card close-all 可用（未弹出任何窗口）')
 const reqA = makeReq('POST', '/dsh-task-toast/card-action', JSON.stringify({ id: '999', action: 'ignore' }))
 const resA = makeRes()
 await ctx.routes['/dsh-task-toast/card-action'].handler(reqA, resA)
-assert.equal(JSON.parse(resA._r.body).ok, true)
-console.log('✓ /card-action 回调可用')
+assert.equal(resA._r.code, 403)
+assert.equal(JSON.parse(resA._r.body).ok, false)
+console.log('✓ /card-action 拒绝缺少专用标记的请求')
 
 // 卡片模式下 /test 会真的 spawn 窗口 —— 这里 mode=off，只校验返回值语义
 const rt = await callRoute(ctx.routes, '/dsh-task-toast/test', 'POST')

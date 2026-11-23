@@ -8,7 +8,7 @@
 // ctx / React / host 等宿主符号）。
 
 /** 插件版本（与 package.json 保持同步；Host 侧会优先读真实 package.json）。 */
-const VERSION = '1.0.0'
+const VERSION = '1.0.1'
 
 /** 上游仓库 owner/repo —— 更新检查与更新命令都基于它。 */
 const REPO = 'LouieKeung-13/dsh-task-toast'
@@ -378,6 +378,23 @@ async function openNotificationSession(sessionId, uiWorkspace, legacySessions) {
     if (typeof legacySessions?.open === 'function') return await legacySessions.open(sessionId) !== false
   } catch { /* Report failure to the caller rather than pretending navigation succeeded. */ }
   return false
+}
+
+// Keep each click's target across asynchronous window activation. A slower, older
+// activation must never navigate away from a notification clicked more recently.
+function createNotificationSessionOpener(uiWorkspace, legacySessions, activateWindow = async () => ({ ok: true })) {
+  let latestRequest = 0
+  return async (sessionId, { restoreWindow = true } = {}) => {
+    const request = ++latestRequest
+    let activated = true
+    if (restoreWindow) {
+      try { activated = (await activateWindow())?.ok !== false }
+      catch { activated = false }
+    }
+    if (request !== latestRequest) return true
+    const opened = await openNotificationSession(sessionId, uiWorkspace, legacySessions)
+    return activated && opened
+  }
 }
 
 function watchNotificationSelection(uiWorkspace, reportForeground) {

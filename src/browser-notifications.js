@@ -124,6 +124,23 @@ export async function openNotificationSession(sessionId, uiWorkspace, legacySess
   return false
 }
 
+// Keep each click's target across asynchronous window activation. A slower, older
+// activation must never navigate away from a notification clicked more recently.
+export function createNotificationSessionOpener(uiWorkspace, legacySessions, activateWindow = async () => ({ ok: true })) {
+  let latestRequest = 0
+  return async (sessionId, { restoreWindow = true } = {}) => {
+    const request = ++latestRequest
+    let activated = true
+    if (restoreWindow) {
+      try { activated = (await activateWindow())?.ok !== false }
+      catch { activated = false }
+    }
+    if (request !== latestRequest) return true
+    const opened = await openNotificationSession(sessionId, uiWorkspace, legacySessions)
+    return activated && opened
+  }
+}
+
 export function watchNotificationSelection(uiWorkspace, reportForeground) {
   const selection = uiWorkspace?.selection
   if (typeof selection?.getSnapshot !== 'function' || typeof selection?.subscribe !== 'function') return () => {}

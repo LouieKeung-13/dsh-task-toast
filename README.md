@@ -4,10 +4,14 @@
 
 Cross-platform task notifications for [DeepSeek Harness](https://www.deepseek.com/harness/). Get a system notification when a task finishes, preview a short result, and open the conversation that produced it.
 
+## Maintenance status
+
+As of November 21, 2026, this project has completed its intended functionality and is in maintenance-only mode. Active feature development has stopped. The current installable code and full usage documentation are retained. Maintenance resumes only for an actual malfunction, a DSH compatibility change, or a clearly identified interaction obstacle.
+
 ## Features
 
 - **System notifications** on Windows and macOS through the client’s Web Notifications API.
-- **Result previews** in task notifications, with a direct action to open the source conversation.
+- **Result previews** in task notifications, with a direct action to open the source conversation. On Windows Desktop, clicking restores a minimized or tray-hidden DSH window before selecting that conversation.
 - **In-app notifications** with `View result`, `Later`, and `Dismiss` actions,
   plus local notification history that can be reviewed and replayed.
 - **Two optional notification sounds** (`Soft` and `Clear`); disabled by default.
@@ -15,29 +19,43 @@ Cross-platform task notifications for [DeepSeek Harness](https://www.deepseek.co
   completion notification is recorded in history rather than interrupting you;
   other conversations can still notify.
 - **Bilingual settings and content** (Simplified Chinese / English), themes, four-corner placement, and configurable dismissal.
-- **Manual file sync** — Settings can copy the install command or sync the complete plugin from the repository’s main branch. Restart DSH after syncing.
+- **Market-managed updates** — manage releases through dshmarket. The plugin no longer overwrites installed files or runs its own package-manager commands.
 - **Completion coverage** for agent, workflow, background-job, and top-level session events.
 
-## Installation
+## Installation and updates
+
+This repository contains the current installable source and prebuilt bundles. dshmarket is the intended marketplace; catalog submission and approval are separate from updating this repository.
 
 ### DSH desktop app
 
-Open **Plugins → Add plugin → Install third-party plugin**. Enter the GitHub repository address or a local package/directory path, install the plugin, enable it, then fully quit and restart DSH.
+Open **Plugins → Add plugin → Install third-party plugin**, enter the repository address below, install it, and enable the plugin:
 
-### DSH CLI / web profile
+```text
+https://github.com/LouieKeung-13/dsh-task-toast
+```
+
+To replace an existing installation, uninstall that copy in the desktop app, then install from this address. The first migration from an older build needs the complete restart described below. A restart performed before replacing the package still loads the old build.
+
+### DSH Web profile
 
 ```sh
 dsh plugin --profile web add github:LouieKeung-13/dsh-task-toast
 ```
 
-For a local checkout or unpublished build, use its absolute path instead. The GitHub command installs whatever version is currently present in the upstream repository; a locally built version is not available from GitHub until it is published there.
+The desktop profile is managed by the desktop app; use its plugin manager for installation.
 
-> The desktop profile is managed by the DSH desktop app. Use its plugin manager rather than trying to manage that profile with the CLI.
+### Updates through dshmarket
+
+- Once the catalog includes this repository, use **Plugins → Plugin Market → Installed** in dshmarket to check and apply updates. Its automatic checks only remind; they do not silently install updates. A local test package does not automatically switch to a market-managed source.
+- The notification settings' **Open Plugins** button opens the Host's plugin page, where you can enter Plugin Market.
+- Follow the Host's actual result: applied, refresh the page, or restart required. A file replacement alone is not evidence that new code is running.
+
+The first migration from an older build that did not release its HTTP routes needs one complete DSH restart. Subsequent replacements can unload and remount this plugin without retaining those old routes. The implementation preserves its in-process settings, queue and delivery cursor; it does not add configuration persistence across application exits.
 
 ## Quick start
 
 1. Open **Settings → Task notifications** and enable the plugin.
-2. Set **Task completed** to **System notification**. New installations use this level by default; an existing saved setting is preserved during upgrade.
+2. Set **Task completed** to **System notification**. New installations use this level by default. Settings survive supported reloads within the same Host process; after a complete restart, check your notification preferences again.
 3. Allow system-notification permission when prompted. The operating system controls whether banners and notification-center entries are shown.
 4. Keep **Show result summary** enabled to add a task-result preview. The complete banner body is capped at 240 characters, including the completion text. With summaries disabled, the completion title remains but the result body is omitted. Click the banner to open the conversation and view the full response.
 5. Optionally choose **Soft** or **Clear** under **Task completion sound**, then use **Preview**. Sounds default to **Off**.
@@ -90,13 +108,14 @@ When a notification is generated while its conversation is being viewed and is s
 
 **Clicking a system notification does not open the conversation**
 
-- Use a build that includes system-notification session navigation, then fully restart DSH after installing it.
-- Keep the DSH client running when testing. If navigation fails, the plugin reports the failure in Settings and provides an in-app fallback that can be expanded or retried from history.
+- Use a build that includes system-notification session navigation and follow the Host’s refresh or restart instruction.
+- Keep DSH running in the background; minimizing it or closing the main window to the system tray is supported on Windows Desktop. Fully quitting the app is outside this restoration flow. After applying the update and any requested refresh or restart, verify both states with newly generated real task notifications.
+- If navigation fails, the plugin reports the failure in Settings and provides an in-app fallback that can be expanded or retried from history.
 - Verify with a real task notification; the test button only verifies its own delivery and the currently selected session.
 
 **Settings appear but notifications do not arrive**
 
-- Fully quit and restart DSH after installing or updating the plugin.
+- Check the Host’s activation result after installing or updating; refresh or restart when it requests that action.
 - Check the **Host status** in Settings. `Host unreachable` means the Host routes did not load; inspect the DSH process log and client console for `[dsh-task-toast]` or `[task-toast]` errors.
 
 ## Uninstall

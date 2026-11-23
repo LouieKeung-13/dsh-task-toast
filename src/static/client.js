@@ -26,18 +26,15 @@ const api = {
   state: () => fetchJson('/state'),
   config: (config) => fetchJson('/config', { method: 'POST', body: JSON.stringify({ config: config }) }),
   active: (report) => fetchJson('/active', { method: 'POST', body: JSON.stringify(report) }),
+  activate: () => fetchJson('/activate', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-DSH-Task-Toast': 'activate' }, body: '{}' }),
   test: (sessionId) => fetchJson('/test', { method: 'POST', body: JSON.stringify({ sessionId }) }),
-  poll: (since) => fetchJson('/poll?since=' + encodeURIComponent(String(since))),
+  poll: (since, stream) => fetchJson('/poll?since=' + encodeURIComponent(String(since)) + (stream ? '&stream=' + encodeURIComponent(stream) : '')),
   version: () => fetchJson('/version'),
-  update: (payload) => fetchJson('/update', { method: 'POST', body: JSON.stringify(payload || {}) }),
   topmost: (action) => fetchJson('/topmost', { method: 'POST', body: JSON.stringify({ action: action }) }),
   card: (action) => fetchJson('/card', { method: 'POST', body: JSON.stringify({ action: action }) }),
   history: () => fetchJson('/history'),
   historyClear: () => fetchJson('/history/clear', { method: 'POST' }),
 }
-
-// 本地兜底用的更新命令（Host 不可达时「复制更新命令」仍可用）。
-const LOCAL_UPDATE_CMD = 'dsh plugin --profile web remove dsh-task-toast\ndsh plugin --profile web add github:' + REPO
 
 // ---------- 多语言 UI 文案 ----------
 function ui(locale) {
@@ -83,14 +80,10 @@ function ui(locale) {
     preset: '快速预设',
     presetHint: '一键批量设置分类级别，降低逐项配置的负担。',
     // ---- 插件文件 ----
-    maintenanceSection: '插件文件',
-    maintenanceHint: '将当前主分支中的完整插件文件同步到此安装，完成后重启 DSH。',
-    copyCmd: '复制安装命令',
-    syncFiles: '同步插件文件',
-    syncingFiles: '同步中…',
-    cmdCopied: '安装命令已复制，请在终端执行后重启 DSH',
-    syncFailed: '同步失败，请复制安装命令在终端执行',
-    hostNeeded: '同步需要 Host 已连接（若未连接请彻底重启 DSH）',
+    maintenanceSection: '插件更新',
+    maintenanceHint: '仅通过 dshmarket 管理更新。在插件页进入「插件市场 → 已安装」。更新后按宿主结果直接生效、刷新页面或重启。',
+    openPlugins: '打开插件页',
+    pluginsUnavailable: '请从侧边栏打开「插件 → 插件市场 → 已安装」。',
     // ---- 置顶 / 独立卡片 ----
     topmost: '通知呈现方式',
     modeCard: '独立置顶小卡片',
@@ -158,14 +151,10 @@ function ui(locale) {
     preset: 'Quick preset',
     presetHint: 'Batch-set category levels in one tap to avoid configuring each one by hand.',
     // ---- Plugin files ----
-    maintenanceSection: 'Plugin files',
-    maintenanceHint: 'Sync the complete plugin files from the current main branch, then restart DSH.',
-    copyCmd: 'Copy install command',
-    syncFiles: 'Sync plugin files',
-    syncingFiles: 'Syncing…',
-    cmdCopied: 'Install command copied. Run it in a terminal, then restart DSH.',
-    syncFailed: 'Sync failed. Copy the install command and run it in a terminal.',
-    hostNeeded: 'Sync requires the Host process. Restart DSH if it is not connected.',
+    maintenanceSection: 'Plugin updates',
+    maintenanceHint: 'Updates are managed only through dshmarket. Open Plugins → Plugin Market → Installed, then follow the Host outcome: applied, refresh, or restart.',
+    openPlugins: 'Open Plugins',
+    pluginsUnavailable: 'Open Plugins → Plugin Market → Installed from the sidebar.',
     // ---- Topmost / standalone card ----
     topmost: 'Notification surface',
     modeCard: 'Standalone floating card',
@@ -360,16 +349,20 @@ function injectCss() {
 .dsh-tt-log { margin: 0; max-height: 220px; overflow: auto; white-space: pre-wrap; word-break: break-all; padding: 8px 10px; border-radius: 8px; background: var(--tt-surface); border: 1px solid var(--tt-border); color: var(--tt-fg); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11.5px; line-height: 1.5; }
 `
   document.head.appendChild(tag)
+  return () => tag.remove()
 }
 
 // ---------- 插件主体 ----------
 const inject = ['slots', 'sessions', 'timer', 'uiWorkspace']
 
 const apply = async (ctx) => {
+  const cursorKey = Symbol.for('dsh-task-toast.client-cursor.v1')
+  const cursorOwner = ctx.root || ctx
+  const cursor = cursorOwner[cursorKey] || (cursorOwner[cursorKey] = { seq: 0, streamId: null })
   const state = {
     config: Object.assign({}, DEFAULT_CONFIG, { categories: Object.assign({}, DEFAULT_CONFIG.categories) }),
     toasts: [],
-    seq: 0,
+    seq: cursor.seq,
     toastCounter: 0,
     systemStatus: null,
     disposed: false,
@@ -379,9 +372,7 @@ const apply = async (ctx) => {
     hostError: null,
     failStreak: 0,
     seqLocal: 0,
-    // 更新检查缓存（由 /version 拉取，Host 不可达时回落本地常量）
-    updateInfo: null,
-    updateCmd: LOCAL_UPDATE_CMD,
+
   }
   const listeners = new Set()
   const emitter = {
@@ -396,8 +387,15 @@ const apply = async (ctx) => {
   const slots = ctx.get('slots')
   const uiWorkspace = ctx.get('uiWorkspace')
 
-  async function openSession(id) {
-    const opened = await openNotificationSession(id, uiWorkspace, sessions)
+  const openNotification = createNotificationSessionOpener(uiWorkspace, sessions, () => {
+    // Standalone browsers keep their own tab focus behavior; only Desktop can
+    // request native restoration of a minimized or tray-hidden application.
+    return globalThis.dshDesktop?.protocolVersion === 1 && globalThis.location?.protocol === 'dsh-app:'
+      ? api.activate() : Promise.resolve({ ok: true })
+  })
+
+  async function openSession(id, options) {
+    const opened = await openNotification(id, options)
     if (!opened) { state.systemStatus = 'navigation-failed'; emitter.emit() }
     return opened
   }
@@ -472,15 +470,10 @@ const apply = async (ctx) => {
     addToast({ seq: state.seqLocal, category: 'update', sessionId: null, title: title, body: body || '' }, 8000)
   }
 
-  /** 复制更新命令到剪贴板，并弹一条回执。 */
-  function copyUpdateCmd(cfg) {
-    const t = ui((cfg && cfg.locale) || state.config.locale)
-    try {
-      if (typeof navigator !== 'undefined' && navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(state.updateCmd || LOCAL_UPDATE_CMD)
-      }
-    } catch (e) { /* ignore */ }
-    flash(t.cmdCopied, state.updateCmd || LOCAL_UPDATE_CMD)
+  function openPluginUpdates(locale) {
+    const navigation = ctx.get('pluginNavigation')
+    if (typeof navigation?.openList === 'function') navigation.openList()
+    else flash(ui(locale).maintenanceSection, ui(locale).pluginsUnavailable)
   }
 
   function handleItems(items) {
@@ -488,7 +481,7 @@ const apply = async (ctx) => {
       if (!item) continue
       // 独立卡片上的「查看结果」→ 直接跳到对应会话
       if (item.kind === 'card-view') {
-        if (item.sessionId) openSession(item.sessionId)
+        if (item.sessionId) openSession(item.sessionId, { restoreWindow: item.activation?.ok === false })
         continue
       }
       // 已经由独立卡片呈现过的通知，页面内不再重复渲染（避免一次事件两个通知）
@@ -513,11 +506,17 @@ const apply = async (ctx) => {
   async function pump() {
     while (!state.disposed) {
       try {
-        const res = await api.poll(state.seq)
+        const res = await api.poll(state.seq, cursor.streamId)
+        if (state.disposed) return
+        if (res?.streamId && cursor.streamId !== res.streamId) {
+          state.seq = 0
+          cursor.streamId = res.streamId
+        }
         let items = []
         if (res && Array.isArray(res.items)) items = res.items.filter((i) => i && typeof i.seq === 'number' && i.seq > state.seq)
         if (res && typeof res.seq === 'number') state.seq = res.seq
         if (items.length) handleItems(items)
+        cursor.seq = state.seq
         // 连接状态诊断：成功响应即视为 Host 可达
         if (state.hostStatus !== 'connected') {
           state.hostStatus = 'connected'
@@ -526,6 +525,7 @@ const apply = async (ctx) => {
         }
         state.failStreak = 0
       } catch (e) {
+        if (state.disposed) return
         state.failStreak += 1
         state.hostError = (e && e.message) ? e.message : String(e)
         if (state.failStreak >= 3 && state.hostStatus !== 'error') {
@@ -533,24 +533,10 @@ const apply = async (ctx) => {
           emitter.emit() // 通知设置页刷新连接状态
         }
         console.error('[task-toast] 长轮询失败（Host 可能未加载/未重启）：', state.hostError)
-        if (timer) await timer.timeout(1500)
+        await new Promise((resolve) => setTimeout(resolve, 1500))
       }
     }
   }
-
-  try {
-    const st = await api.state()
-    if (st && st.config) state.config = st.config
-  } catch (e) { console.error('task-toast state failed', e) }
-  try {
-    const v = await api.version()
-    if (v) {
-      state.updateInfo = v
-      if (typeof v.updateCmd === 'string' && v.updateCmd) state.updateCmd = v.updateCmd
-    }
-  } catch (e) { /* Host 不可达时保持本地兜底命令 */ }
-  state.config = { ...state.config, soundCues: readSoundPreference(state.config.soundCues ?? 'off') }
-  pump()
 
   ctx.effect(() => {
     const win = globalThis.window
@@ -566,6 +552,21 @@ const apply = async (ctx) => {
       taskSound.dispose()
     }
   })
+
+  try {
+    const st = await api.state()
+    if (state.disposed) return
+    if (st && st.config) state.config = st.config
+    if (st?.streamId && cursor.streamId !== st.streamId) {
+      state.seq = 0
+      cursor.seq = 0
+      cursor.streamId = st.streamId
+    }
+  } catch (e) { console.error('task-toast state failed', e) }
+  if (state.disposed) return
+  state.config = { ...state.config, soundCues: readSoundPreference(state.config.soundCues ?? 'off') }
+  pump()
+
 
   // ---------- Toast UI（shell.overlay） ----------
   const reportForeground = createForegroundReporter(api.active)
@@ -612,7 +613,7 @@ const apply = async (ctx) => {
       addToast({ seq: state.seqLocal--, category: h.category, sessionId: h.sessionId, title: h.title, body: h.body, groupCount: 1 }, 10000)
     }
     async function doView(toast) {
-      if (toast.category === 'update') { copyUpdateCmd(cfg); dismissToast(toast.id); return }
+      if (toast.category === 'update') { openPluginUpdates(cfg.locale); dismissToast(toast.id); return }
       const canNav = cfg.viewBehavior === 'navigate' && !!toast.sessionId
       if (canNav) {
         if (await openSession(toast.sessionId)) dismissToast(toast.id)
@@ -672,7 +673,7 @@ const apply = async (ctx) => {
           onClick: (e) => { e.stopPropagation(); try { if (navigator && navigator.clipboard) navigator.clipboard.writeText(toast.body || '') } catch (err) { /* ignore */ } },
         }, t.copy) : null,
         React.createElement('div', { key: 'actions', className: 'dsh-tt-actions' },
-          React.createElement('button', { key: 'view', className: 'dsh-tt-btn dsh-tt-btn--primary', onClick: onView }, isUpdate ? t.copyCmd : t.viewResult),
+          React.createElement('button', { key: 'view', className: 'dsh-tt-btn dsh-tt-btn--primary', onClick: onView }, isUpdate ? t.openPlugins : t.viewResult),
           React.createElement('button', { key: 'later', className: 'dsh-tt-btn', onClick: () => snoozeToast(toast) }, t.later),
           React.createElement('button', { key: 'dismiss', className: 'dsh-tt-btn', onClick: () => dismissToast(toast.id) }, t.dismiss)
         ),
@@ -769,9 +770,6 @@ const apply = async (ctx) => {
     }
 
     // ---------- 版本与更新 ----------
-    const [upd, setUpd] = React.useState(state.updateInfo)
-    const [updRunning, setUpdRunning] = React.useState(false)
-    const [updLog, setUpdLog] = React.useState('')
     const [topmostMsg, setTopmostMsg] = React.useState('')
 
     function doTopmostProbe() {
@@ -800,41 +798,6 @@ const apply = async (ctx) => {
       }).catch((err) => {
         setTopmostMsg(t.topmostFail + ' · ' + ((err && err.message) || String(err)))
       })
-    }
-
-    React.useEffect(() => {
-      if (state.updateInfo) { setUpd(state.updateInfo); return }
-      api.version().then((v) => {
-        state.updateInfo = v
-        if (typeof v.updateCmd === 'string' && v.updateCmd) state.updateCmd = v.updateCmd
-        setUpd(v)
-      }).catch(() => { /* 保持 null，显示「尚未检查」 */ })
-    }, [])
-
-    function doCopyCmd() {
-      try {
-        if (typeof navigator !== 'undefined' && navigator.clipboard && navigator.clipboard.writeText) {
-          navigator.clipboard.writeText(state.updateCmd || LOCAL_UPDATE_CMD)
-        }
-      } catch (e) { /* ignore */ }
-      setUpdLog((cfg.locale === 'en' ? 'Install command copied:\n' : '已复制安装命令：\n') + (state.updateCmd || LOCAL_UPDATE_CMD) + (cfg.locale === 'en' ? '\n\nRun it in a terminal, then restart DSH.' : '\n\n请在终端执行后重启 DSH。'))
-    }
-
-    function syncPluginFiles() {
-      setUpdRunning(true)
-      setUpdLog(cfg.locale === 'en' ? 'Syncing the complete plugin from the main branch…' : '正在从主分支同步完整插件文件…')
-      api.update({ force: true }).then((result) => {
-        const en = cfg.locale === 'en'
-        const success = !!(result && result.ok)
-        const message = success
-          ? (en ? '✅ Files synced. Fully restart DSH to apply.\n\n' : '✅ 插件文件已同步，请完整重启 DSH 使更改生效。\n\n')
-          : (en ? '⚠️ Could not sync plugin files. Copy the install command and run it manually.\n\n' : '⚠️ 无法同步插件文件，请复制安装命令在终端执行。\n\n')
-        const details = String((result && result.log) || '').replace(/\bv?\d+\.\d+\.\d+\b/g, 'current build')
-        setUpdLog(message + details)
-      }).catch((error) => {
-        const en = cfg.locale === 'en'
-        setUpdLog((en ? '⚠️ File sync failed: ' : '⚠️ 同步失败：') + ((error && error.message) || String(error)) + '\n\n' + (en ? 'Install command:\n' : '安装命令：\n') + (state.updateCmd || LOCAL_UPDATE_CMD))
-      }).then(() => setUpdRunning(false))
     }
 
     function selectRow(label, desc, control) {
@@ -991,15 +954,10 @@ const apply = async (ctx) => {
           t.cardSelfTest + ' · ' + (upd.cardSelfTest === 'ok' ? t.cardSelfOk : String(upd.cardSelfTest).slice(0, 120)))
         : null,
 
-      // ---------- 插件文件维护 ----------
+      // Update execution remains owned by the installed Market and Host.
       React.createElement('h3', { className: 'dsh-tt-section-title', style: { marginTop: '6px' } }, t.maintenanceSection),
       React.createElement('p', { className: 'dsh-tt-hint' }, t.maintenanceHint),
-      React.createElement('div', { className: 'dsh-tt-actions-row' },
-        React.createElement('button', { className: 'dsh-tt-btn-lg dsh-tt-btn-lg--ghost', onClick: doCopyCmd, disabled: updRunning }, t.copyCmd),
-        React.createElement('button', { className: 'dsh-tt-btn-lg', onClick: syncPluginFiles, disabled: updRunning }, updRunning ? t.syncingFiles : t.syncFiles)
-      ),
-      updLog ? React.createElement('pre', { className: 'dsh-tt-log' }, updLog) : null,
-      state.hostStatus === 'error' ? React.createElement('p', { className: 'dsh-tt-hint' }, '⚠️ ' + t.hostNeeded) : null
+      React.createElement('button', { className: 'dsh-tt-btn-lg', onClick: () => openPluginUpdates(cfg.locale) }, t.openPlugins)
     )
   }
 
@@ -1017,7 +975,7 @@ const apply = async (ctx) => {
     ))
   }
 
-  injectCss()
+  ctx.effect(injectCss)
 }
 
 module.exports = { apply, inject }
