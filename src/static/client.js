@@ -61,7 +61,7 @@ function ui(locale) {
     soundCues: '任务完成音效',
     soundPreview: '试听',
     soundMute: '关闭音效',
-    soundUnavailable: '未能播放音效，请检查 DSH 的音频输出。',
+    soundUnavailable: '自定义音效未能播放；系统通知可回退到系统声音。请在 DSH 前台试听。',
     systemPermission: '系统通知权限',
     systemAllow: '请求权限',
     systemGranted: '已允许。横幅由系统设置控制。',
@@ -132,7 +132,7 @@ function ui(locale) {
     soundCues: 'Task completion sound',
     soundPreview: 'Preview',
     soundMute: 'Mute',
-    soundUnavailable: 'The sound could not play. Check the audio output for DSH.',
+    soundUnavailable: 'The custom cue did not play; system notifications can fall back to OS sound. Preview it with DSH in the foreground.',
     systemPermission: 'System notification permission',
     systemAllow: 'Request permission',
     systemGranted: 'Allowed. The OS controls banners.',
@@ -365,6 +365,7 @@ const apply = async (ctx) => {
     seq: cursor.seq,
     toastCounter: 0,
     systemStatus: null,
+    soundFailed: false,
     disposed: false,
     focusedSeq: null, // 键盘焦点所在的 toast（←→/↑↓ 切换，Enter 查看，Esc 忽略）
     // 诊断：Host（Node 端）连接状态
@@ -476,31 +477,47 @@ const apply = async (ctx) => {
     else flash(ui(locale).maintenanceSection, ui(locale).pluginsUnavailable)
   }
 
-  function handleItems(items) {
-    for (const item of items) {
-      if (!item) continue
-      // 独立卡片上的「查看结果」→ 直接跳到对应会话
-      if (item.kind === 'card-view') {
-        if (item.sessionId) openSession(item.sessionId, { restoreWindow: item.activation?.ok === false })
-        continue
-      }
-      // 已经由独立卡片呈现过的通知，页面内不再重复渲染（避免一次事件两个通知）
-      if (item.silent) continue
-      const lifetime = item.category === 'test' ? 10000 : state.config.autoDismissMs || 0
-      const level = (state.config.categories || {})[item.category]
-      taskSound.notify(item, state.config)
-      if (item.delivery === 'system' || (item.category !== 'test' && !item.delivery && level === 'system')) {
-        deliverSystemNotification(item, {
-          onOpen: openSession,
-          showSummary: state.config.showSummary,
-          onNavigationFailure: () => { if (!state.disposed) addToast({ ...item, expanded: true }, 0) },
-          onFallback: () => { if (!state.disposed) addToast(item, lifetime) },
-          onStatus: (status) => { state.systemStatus = status; emitter.emit() },
-        })
-        continue
-      }
-      if (item.category === 'test' || level !== 'off') addToast(item, lifetime)
+  async function handleItem(item) {
+    if (!item || state.disposed) return
+    // 独立卡片回跳不发提示音，页面只负责消费会话导航。
+    if (item.kind === 'card-view') {
+      if (item.sessionId) openSession(item.sessionId, { restoreWindow: item.activation?.ok === false })
+      return
     }
+    if (item.silent) return
+    const lifetime = item.category === 'test' ? 10000 : state.config.autoDismissMs || 0
+    const level = (state.config.categories || {})[item.category]
+    const soundConfig = state.config
+    const soundRequested = (item.category === 'task' || item.category === 'test')
+      && soundConfig.enabled && soundConfig.soundCues !== 'off'
+      && !(item.category === 'task' && soundConfig.categories.task === 'off')
+    const soundPlayed = soundRequested && await taskSound.notify(item, soundConfig)
+    if (state.disposed) return
+    const usesSystemNotification = item.delivery === 'system' || (item.category !== 'test' && !item.delivery && level === 'system')
+    if (soundRequested && !soundPlayed && !state.soundFailed) {
+      state.soundFailed = true
+      emitter.emit()
+    } else if (soundPlayed && state.soundFailed) {
+      state.soundFailed = false
+      emitter.emit()
+    }
+    if (usesSystemNotification) {
+      deliverSystemNotification(item, {
+        onOpen: openSession,
+        showSummary: state.config.showSummary,
+        // Fall back to the OS sound only when the custom Web Audio cue did not play.
+        silent: !soundRequested || soundPlayed,
+        onNavigationFailure: () => { if (!state.disposed) addToast({ ...item, expanded: true }, 0) },
+        onFallback: () => { if (!state.disposed) addToast(item, lifetime) },
+        onStatus: (status) => { state.systemStatus = status; emitter.emit() },
+      })
+      return
+    }
+    if (item.category === 'test' || level !== 'off') addToast(item, lifetime)
+  }
+
+  function handleItems(items) {
+    for (const item of items) void handleItem(item)
   }
 
   async function pump() {
@@ -728,7 +745,7 @@ const apply = async (ctx) => {
     const t = ui(cfg.locale)
     const [permission, setPermission] = React.useState(systemNotificationPermission)
     const [, rerenderSystem] = React.useState(0)
-    const messageKeys = { granted: 'systemGranted', default: 'systemDefault', denied: 'systemDenied', unsupported: 'systemUnsupported', failed: 'systemFailed', submitted: 'systemSubmitted', 'navigation-failed': 'navigationFailed' }
+    const messageKeys = { granted: 'systemGranted', default: 'systemDefault', denied: 'systemDenied', unsupported: 'systemUnsupported', failed: 'systemFailed', submitted: 'systemSubmitted', 'navigation-failed': 'navigationFailed', 'sound-unavailable': 'soundUnavailable' }
     const refreshPermission = () => setPermission(systemNotificationPermission())
     React.useEffect(() => {
       const unsubscribe = emitter.subscribe(() => { refreshPermission(); rerenderSystem((n) => n + 1) })
@@ -815,7 +832,7 @@ const apply = async (ctx) => {
     const themeOpts = THEMES.map((tm) => React.createElement('option', { key: tm.id, value: tm.id }, cfg.locale === 'en' ? tm.en : tm.zh))
     const vbOpts = VIEW_BEHAVIORS.map((b) => React.createElement('option', { key: b.id, value: b.id }, cfg.locale === 'en' ? b.en : b.zh))
     const levelOpts = LEVELS.map((l) => React.createElement('option', { key: l.id, value: l.id }, cfg.locale === 'en' ? l.en : l.zh))
-    const soundRow = selectRow(t.soundCues, soundFailed ? t.soundUnavailable : null,
+    const soundRow = selectRow(t.soundCues, soundFailed || state.soundFailed ? t.soundUnavailable : null,
       React.createElement('div', { className: 'dsh-tt-actions-row', style: { flexWrap: 'wrap', justifyContent: 'flex-end' } },
         React.createElement('select', {
           className: 'dsh-tt-select',
@@ -824,9 +841,13 @@ const apply = async (ctx) => {
           onChange: (event) => {
             const soundCues = event.target.value
             setSoundFailed(false)
-            if (soundCues !== 'off') void taskSound.unlock()
+            state.soundFailed = false
             saveSoundPreference(soundCues)
             update({ soundCues })
+            if (soundCues !== 'off') {
+              void taskSound.preview(soundCues, () => state.config.soundCues === soundCues && !state.disposed)
+                                .then((played) => { if (!state.disposed && state.config.soundCues === soundCues) { state.soundFailed = !played; setSoundFailed(!played); emitter.emit() } })
+            }
           },
         }, SOUND_LEVELS.map((level) => React.createElement('option', { key: level.id, value: level.id }, cfg.locale === 'en' ? level.en : level.zh))),
         React.createElement('button', {
@@ -837,7 +858,7 @@ const apply = async (ctx) => {
             const selected = cfg.soundCues
             const isCurrent = () => state.config.soundCues === selected && !state.disposed
             const played = await taskSound.preview(selected, isCurrent)
-            if (isCurrent()) setSoundFailed(!played)
+            if (isCurrent()) { state.soundFailed = !played; setSoundFailed(!played); emitter.emit() }
           },
         }, t.soundPreview),
         React.createElement('button', {
@@ -846,6 +867,7 @@ const apply = async (ctx) => {
           disabled: cfg.soundCues === 'off',
           onClick: () => {
             setSoundFailed(false)
+            state.soundFailed = false
             saveSoundPreference('off')
             update({ soundCues: 'off' })
           },
@@ -949,10 +971,7 @@ const apply = async (ctx) => {
           : null
       ),
       topmostMsg ? React.createElement('p', { className: 'dsh-tt-hint' }, topmostMsg) : null,
-      (((cfg.topmost && cfg.topmost.mode) || 'card') === 'card' && upd && upd.cardSelfTest && upd.cardSelfTest !== 'pending')
-        ? React.createElement('p', { className: 'dsh-tt-hint' },
-          t.cardSelfTest + ' · ' + (upd.cardSelfTest === 'ok' ? t.cardSelfOk : String(upd.cardSelfTest).slice(0, 120)))
-        : null,
+      /* Card availability is reported by the test action; no stale update snapshot is rendered here. */
 
       // Update execution remains owned by the installed Market and Host.
       React.createElement('h3', { className: 'dsh-tt-section-title', style: { marginTop: '6px' } }, t.maintenanceSection),

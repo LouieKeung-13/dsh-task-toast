@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url'
 import { VERSION } from '../src/config.js'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
-const rootFiles = new Set(['.gitattributes', '.gitignore', 'package.json', 'cordis.patch.yml', 'README.md', 'README.zh.md', 'LICENSE'])
+const rootFiles = new Set(['.gitattributes', '.gitignore', 'package.json', 'cordis.patch.yml', 'README.md', 'README.zh.md', 'CHANGELOG.md', 'CHANGELOG.zh.md', 'LICENSE'])
 const rootDirs = new Set(['src', 'lib', 'dynamic', 'scripts', 'tests'])
 const oldPluginNumber = /\bv?1\.[1-9][0-9]*\.(?:[0-9]+|x)\b/i
 let files = 0

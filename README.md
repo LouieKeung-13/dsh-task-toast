@@ -2,39 +2,30 @@
 
 [简体中文](README.zh.md)
 
-Cross-platform task notifications for [DeepSeek Harness](https://www.deepseek.com/harness/). Get a system notification when a task finishes, preview a short result, and open the conversation that produced it.
-
-## Maintenance status
-
-As of November 21, 2026, this project has completed its intended functionality and is in maintenance-only mode. Active feature development has stopped. The current installable code and full usage documentation are retained. Maintenance resumes only for an actual malfunction, a DSH compatibility change, or a clearly identified interaction obstacle.
+Task-completion notifications for [DeepSeek Harness](https://www.deepseek.com/harness/). Get a concise result preview and open the conversation that produced it, even when the Windows Desktop window is minimized or hidden in the system tray.
 
 ## Features
 
-- **System notifications** on Windows and macOS through the client’s Web Notifications API.
-- **Result previews** in task notifications, with a direct action to open the source conversation. On Windows Desktop, clicking restores a minimized or tray-hidden DSH window before selecting that conversation.
-- **In-app notifications** with `View result`, `Later`, and `Dismiss` actions,
-  plus local notification history that can be reviewed and replayed.
-- **Two optional notification sounds** (`Soft` and `Clear`); disabled by default.
-- **Focus-aware delivery** — while the selected conversation is running, its
-  completion notification is recorded in history rather than interrupting you;
-  other conversations can still notify.
-- **Bilingual settings and content** (Simplified Chinese / English), themes, four-corner placement, and configurable dismissal.
-- **Market-managed updates** — manage releases through dshmarket. The plugin no longer overwrites installed files or runs its own package-manager commands.
-- **Completion coverage** for agent, workflow, background-job, and top-level session events.
+- **System notifications** on supported Windows and macOS clients, with an in-app fallback when delivery is unavailable. Task-completion alerts use the selected cue when it plays; otherwise the OS alert sound is allowed. Error alerts keep the OS default sound.
+- **Result previews** of up to 240 characters. Click a notification to open its source conversation; on Windows Desktop, a minimized or tray-hidden window is restored first.
+- **In-app toasts** with View result, Later and Dismiss actions, plus local notification history.
+- **Optional Soft and Clear sounds**. Selecting a sound previews it. If background audio is suspended, the plugin attempts to resume it; when it cannot, system notifications retain the OS notification sound instead of being silent.
+- **Focus-aware delivery** that avoids interrupting a conversation currently being viewed while it is running.
+- **Bilingual settings** (English and Simplified Chinese), themes, placement and dismissal controls.
+- **Multiple task sources** including agents, workflows, background jobs and top-level sessions.
+- **Updates managed by dshmarket**; the plugin does not overwrite installed files or run a package manager itself.
 
-## Installation and updates
+## Install
 
-This repository contains the current installable source and prebuilt bundles. dshmarket is the intended marketplace; catalog submission and approval are separate from updating this repository.
+### DSH Desktop
 
-### DSH desktop app
-
-Open **Plugins → Add plugin → Install third-party plugin**, enter the repository address below, install it, and enable the plugin:
+Open **Plugins → Add plugin → Install third-party plugin**, then enter:
 
 ```text
 https://github.com/LouieKeung-13/dsh-task-toast
 ```
 
-To replace an existing installation, uninstall that copy in the desktop app, then install from this address. The first migration from an older build needs the complete restart described below. A restart performed before replacing the package still loads the old build.
+Install and enable the plugin. The package includes prebuilt Host and Client files; installation does not require a local build step.
 
 ### DSH Web profile
 
@@ -42,86 +33,74 @@ To replace an existing installation, uninstall that copy in the desktop app, the
 dsh plugin --profile web add github:LouieKeung-13/dsh-task-toast
 ```
 
-The desktop profile is managed by the desktop app; use its plugin manager for installation.
+Use the target profile name in place of `web` where needed. The Desktop profile is managed by the Desktop app.
 
-### Updates through dshmarket
+## Updates
 
-- Once the catalog includes this repository, use **Plugins → Plugin Market → Installed** in dshmarket to check and apply updates. Its automatic checks only remind; they do not silently install updates. A local test package does not automatically switch to a market-managed source.
-- The notification settings' **Open Plugins** button opens the Host's plugin page, where you can enter Plugin Market.
-- Follow the Host's actual result: applied, refresh the page, or restart required. A file replacement alone is not evidence that new code is running.
+The only intended marketplace channel is **dshmarket**. Market listing requires a separate catalog review; once listed, manage it through **Plugins → Plugin Market → Installed**. Automatic update checks can remind you about updates, but do not install them silently. A direct GitHub installation does not automatically switch to a market-managed installation source.
 
-The first migration from an older build that did not release its HTTP routes needs one complete DSH restart. Subsequent replacements can unload and remount this plugin without retaining those old routes. The implementation preserves its in-process settings, queue and delivery cursor; it does not add configuration persistence across application exits.
+The updater and plugin-source changes are applied by DSH's existing Host/Client reload mechanisms when the Host reports that they applied. Follow the Host result if it asks you to refresh the page or restart DSH. The first migration from a pre-lifecycle-cleanup build still requires one complete restart to clear stale routes left by that older process.
 
 ## Quick start
 
 1. Open **Settings → Task notifications** and enable the plugin.
-2. Set **Task completed** to **System notification**. New installations use this level by default. Settings survive supported reloads within the same Host process; after a complete restart, check your notification preferences again.
-3. Allow system-notification permission when prompted. The operating system controls whether banners and notification-center entries are shown.
-4. Keep **Show result summary** enabled to add a task-result preview. The complete banner body is capped at 240 characters, including the completion text. With summaries disabled, the completion title remains but the result body is omitted. Click the banner to open the conversation and view the full response.
-5. Optionally choose **Soft** or **Clear** under **Task completion sound**, then use **Preview**. Sounds default to **Off**.
+2. Set **Task completed** to **System notification** and allow notification permission when prompted.
+3. Leave **Show result summary** enabled for a short result preview. Disable it if task output may contain sensitive information; the OS may show notification text on the lock screen.
+4. Choose **Soft** or **Clear** under **Task completion sound**. Selecting a cue previews it; the Preview button can replay it.
+5. Use a real background task to check result previews and session navigation end to end. The test notification contains no real task result.
 
-The **Send test notification** button checks delivery. A test notification can carry the currently selected conversation, but does not contain a real task result. Use a real background task to verify the result preview and session navigation end to end.
+The selected sound cue is remembered in browser storage. Other notification settings and queues are held by the running Host process; after fully exiting DSH, check and set them again.
 
 ## Notification behavior
 
 | Setting | Behavior |
 | --- | --- |
-| **System notification** | Sends one OS notification. If permission is denied, the API is unavailable, or delivery fails, the plugin falls back to one in-app toast. It does not also show a second in-app toast after successful delivery. |
-| **In-app toast** | Shows the result and the configured `View result`, `Later`, and `Dismiss` actions inside DSH. |
+| **System notification** | Sends one OS notification. A denied permission, unsupported API or delivery failure falls back to one in-app toast. If the selected Web Audio cue cannot resume, the OS notification is allowed to use its own sound. |
+| **In-app toast** | Shows the result and View result, Later and Dismiss actions inside DSH. |
 | **Off** | Suppresses that notification category. |
-| **Show result summary** | Uses plain assistant text from the latest answered user turn. Reasoning and tool-call/result content are excluded. When summaries are disabled, the system banner keeps its completion title but omits the result body; when no suitable answer exists, it uses the generic completion body. |
-| **Task completion sound** | `Off`, `Soft`, or `Clear`. The selected cue is synthesized locally; it does not use downloaded audio or platform shell scripts. |
+| **Show result summary** | Uses plain assistant text from the latest answered user turn. Reasoning, tool-call/result content and older turns are excluded. |
+| **Task completion sound** | Off, Soft or Clear. Sounds are synthesized locally. The selected cue is previewed on selection and retried when a task notification arrives; audio policies may prevent Web Audio in a background renderer. |
 
-System banners show a short preview, not the full transcript. The notification
-body is capped at 240 characters total, including the localized completion text
-and result summary. It is plain text: the plugin does not render HTML or execute
-result content. Because the preview is managed by the OS, it may appear on the
-lock screen; disable **Show result summary** if task output may be sensitive.
+A system banner contains a short plain-text preview, not the full transcript. The body is capped at 240 characters including the completion text. The plugin does not render HTML or execute result content. OS notification display, sound and retention are controlled by the client and operating system.
 
-When a notification is generated while its conversation is being viewed and is still running, it is recorded in history without interrupting the user. A different conversation can still notify. Suppressed notifications are not automatically replayed later.
+When a notification is generated for a conversation that is being viewed while it is still running, it is recorded in history without interrupting the user. Such suppressed notifications are not automatically replayed later.
+
+On Windows Desktop, clicking a system notification or the View action on a floating card asks DSH to restore/show/focus its main window before selecting the notification's source session. DSH must still be running in the background; this does not relaunch a fully exited application. Other hosts use their own window and focus behavior.
 
 ## Settings
 
-- **Task completed / Error** — `Off`, `In-app toast`, or `System notification` per category.
-- **View result** — navigate to the source conversation or expand the in-app toast.
-- **Show result summary** — include the task result where supported.
-- **Only other sessions** — suppress notifications for the focused, idle conversation.
-- **Task completion sound** — `Off` (default), `Soft`, or `Clear`, with **Preview** and **Mute** controls.
-- **Overlay position, theme, language, and auto-dismiss** — customize in-app notifications.
-- **Notification surface** — optional legacy card/window helpers for app-level notifications; behavior and available actions vary by platform. System notifications remain a separate channel.
-- **History** — review, replay, or clear recent notifications. The static desktop Host stores at most 200 history entries locally; dynamic-plugin history is in memory.
+- **Task completed / Error** — Off, In-app toast or System notification per category.
+- **View result** — navigate to the source session or expand the in-app toast.
+- **Show result summary** and **Only other sessions** — control preview content and focused-session filtering.
+- **Task completion sound** — Off, Soft or Clear, with Preview and Mute controls.
+- **Notification presentation** — optional floating card or window helper; support and actions vary by platform. This setting is separate from the system notification channel.
+- **Appearance and history** — position, theme, language, auto-dismiss and a local notification history. Static Desktop Host history keeps at most 200 entries; dynamic-plugin history is in memory.
 
 ## Troubleshooting
 
-**No system banner appears**
+### The settings panel goes blank after selecting a floating card
 
-- Confirm **Task completed** is set to **System notification**.
-- Check DSH’s **System notification permission** status and the OS notification / Focus Assist / Do Not Disturb settings.
-- Test while DSH is running. The OS may suppress a banner while still retaining the notification.
-- If permission is denied or the system channel fails, look for the single in-app fallback toast.
+The Settings render no longer reads a stale update-state object when Card is selected. The Settings panel must remain renderable when Card, Window or Off is selected. If an older Client is still cached, follow the Host activation result and refresh or restart as requested.
 
-**The notification has no result preview**
+### A task notification has no sound
 
-- Turn on **Show result summary**.
-- A preview is included only when the latest user turn has a suitable assistant text response. Reasoning, tool content, and older answers are intentionally excluded.
-- The OS banner is capped at a short preview; open the conversation for the full result.
+- Selecting Soft or Clear previews the cue. If preview fails, check the DSH audio output and try Preview while the application is foregrounded.
+- An operating system or browser may suspend background Web Audio. The plugin tries to resume the unlocked context at task completion. If that fails on the System notification channel, it permits the OS notification sound as a fallback; that fallback uses the OS-selected sound, not the custom cue.
+- The System channel must have notification permission. OS Focus Assist / Do Not Disturb and per-app sound settings also apply.
+- For an In-app toast, an OS sound fallback is not available; return DSH to the foreground and use Preview to re-enable audio.
 
-**Clicking a system notification does not open the conversation**
+### Clicking a system notification does not open the conversation
 
-- Use a build that includes system-notification session navigation and follow the Host’s refresh or restart instruction.
-- Keep DSH running in the background; minimizing it or closing the main window to the system tray is supported on Windows Desktop. Fully quitting the app is outside this restoration flow. After applying the update and any requested refresh or restart, verify both states with newly generated real task notifications.
-- If navigation fails, the plugin reports the failure in Settings and provides an in-app fallback that can be expanded or retried from history.
-- Verify with a real task notification; the test button only verifies its own delivery and the currently selected session.
+Keep DSH running in the background. On Windows Desktop the plugin can restore a minimized or tray-hidden main window. Fully quitting DSH is outside this notification callback. Test with a newly generated real task notification.
 
-**Settings appear but notifications do not arrive**
+### No notification arrives
 
-- Check the Host’s activation result after installing or updating; refresh or restart when it requests that action.
-- Check the **Host status** in Settings. `Host unreachable` means the Host routes did not load; inspect the DSH process log and client console for `[dsh-task-toast]` or `[task-toast]` errors.
+Check the category level, the Host status in Settings and the operating-system notification permissions. Inspect the DSH process log and Client console for `[dsh-task-toast]` or `[task-toast]` errors.
 
 ## Uninstall
 
-- **DSH desktop app:** use **Plugins → Installed plugins** in the desktop app.
-- **Web profile:**
+- **DSH Desktop:** use **Plugins → Installed plugins**.
+- **DSH Web profile:**
 
   ```sh
   dsh plugin --profile web remove dsh-task-toast
@@ -129,15 +108,15 @@ When a notification is generated while its conversation is being viewed and is s
 
 ## Development
 
-Requirements: Node.js 18 or newer. No dependency installation is required for building the package.
+Requirements: Node.js 18 or newer.
 
 ```sh
-npm run build       # build static and dynamic bundles
-npm test            # build and run notification, session, and client regressions
+npm run build
+npm test
 node tests/stress-host.mjs
 ```
 
-The distributable static files are generated in `lib/`; the dynamic fallback is in `dynamic/`. After changing source, rebuild and commit the generated artifacts alongside it. During development, do not edit files directly inside an installed DSH profile.
+`lib/` contains the static installable build and `dynamic/` the dynamic fallback. Rebuild generated artifacts after changing source. Do not edit an installed DSH profile directly during development.
 
 ## License
 

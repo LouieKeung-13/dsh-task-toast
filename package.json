@@ -1,6 +1,6 @@
 {
   "name": "dsh-task-toast",
-  "version": "1.0.1",
+  "version": "1.0.3",
   "description": "DSH task notifications with result previews, source-session navigation, optional sounds, and dshmarket-managed updates.",
   "type": "module",
   "main": "lib/index.js",

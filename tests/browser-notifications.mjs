@@ -33,6 +33,13 @@ assert.equal(fallbacks, 0, 'a shown system notification cannot also produce an o
 await banner.onclick()
 assert.deepEqual(opened, ['workspace-session'])
 assert.ok(banner.closed)
+deliverSystemNotification(item, {
+  NotificationApi: NotificationMock,
+  silent: false,
+  onOpen() {}, onFallback() {}, onStatus() {},
+})
+assert.equal(banner.options.silent, false, 'OS notification sound remains enabled when Web Audio is unavailable')
+
 
 deliver()
 banner.onerror()

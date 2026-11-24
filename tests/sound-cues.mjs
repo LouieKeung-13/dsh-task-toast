@@ -10,7 +10,9 @@ class AudioMock {
   tones = []
   destination = {}
   constructor() { contexts.push(this) }
-  async resume() { this.state = 'running' }
+  resumeCalls = 0
+  rejectResume = false
+  async resume() { this.resumeCalls += 1; if (this.rejectResume) throw Error('NotAllowedError'); this.state = 'running' }
   async close() { this.state = 'closed' }
   createOscillator() {
     const tone = { frequency: { setValueAtTime(value) { tone.hz = value } }, connect() {}, disconnect() { tone.disconnected = true }, start(at) { tone.start = at }, stop(at) { tone.end = at } }
@@ -28,8 +30,8 @@ for (const soundCues of SOUND_LEVEL_IDS) assert.equal(config(soundCues).soundCue
 assert.equal(config('invalid').soundCues, 'off')
 
 const player = createTaskSoundPlayer(AudioMock)
-assert.equal(player.notify({ seq: 1, category: 'task' }, config('soft')), false)
-assert.equal(contexts.length, 0, 'background delivery cannot allocate a locked audio context')
+assert.equal(await player.notify({ seq: 1, category: 'task' }, config('soft')), false)
+assert.equal(contexts.length, 0, 'background delivery without a user-unlocked context must not allocate audio')
 assert.equal(await player.preview('off'), false)
 assert.equal(contexts.length, 0, 'muting never initializes audio')
 assert.equal(await player.preview('soft'), true)
@@ -38,14 +40,14 @@ assert.deepEqual(audio.tones.map((tone) => tone.hz), [660])
 assert.equal(await player.preview('clear'), true)
 assert.deepEqual(audio.tones.slice(1).map((tone) => tone.hz), [880, 1320])
 const item = { seq: 101, category: 'task', title: 'Done' }
-assert.equal(player.notify(item, config('soft')), true)
-assert.equal(player.notify(item, config('soft')), false)
-assert.equal(player.notify({ ...item, seq: 102, replaceSeq: 101 }, config('clear')), false, 'a grouped notification does not ring again')
+assert.equal(await player.notify(item, config('soft')), true)
+assert.equal(await player.notify(item, config('soft')), true)
+assert.equal(await player.notify({ ...item, seq: 102, replaceSeq: 101 }, config('clear')), true, 'a grouped notification inherits the cue already played')
 let count = audio.tones.length
-assert.equal(player.notify({ seq: 103, category: 'task' }, config('off')), false)
-assert.equal(player.notify({ seq: 104, category: 'task', silent: true }, config('soft')), false)
-assert.equal(player.notify({ seq: 105, category: 'task' }, { ...config('soft'), enabled: false }), false)
-assert.equal(player.notify({ seq: 106, category: 'update' }, config('soft')), false)
+assert.equal(await player.notify({ seq: 103, category: 'task' }, config('off')), false)
+assert.equal(await player.notify({ seq: 104, category: 'task', silent: true }, config('soft')), false)
+assert.equal(await player.notify({ seq: 105, category: 'task' }, { ...config('soft'), enabled: false }), false)
+assert.equal(await player.notify({ seq: 106, category: 'update' }, config('soft')), false)
 assert.equal(audio.tones.length, count)
 assert.equal(await player.preview('clear', () => false), false, 'muting during an unlock cancels a pending preview')
 assert.equal(audio.tones.length, count)
@@ -57,7 +59,7 @@ class NotificationMock {
   close() {}
 }
 let fallbacks = 0
-player.notify({ ...item, seq: 110 }, config('clear'))
+await player.notify({ ...item, seq: 110 }, config('clear'))
 count = audio.tones.length
 deliverSystemNotification(item, { NotificationApi: NotificationMock, onStatus() {}, onOpen() {}, onFallback() { fallbacks += 1 } })
 assert.equal(banner.options.silent, true, 'OS task sound is suppressed so the plugin owns the sound selection')
@@ -67,7 +69,7 @@ assert.equal(fallbacks, 1)
 assert.equal(audio.tones.length, count, 'overlay fallback cannot play the same task cue a second time')
 player.dispose()
 assert.equal(audio.state, 'closed')
-assert.equal(player.notify({ ...item, seq: 111 }, config('soft')), false)
+assert.equal(await player.notify({ ...item, seq: 111 }, config('soft')), false)
 class RejectedAudio extends AudioMock { async resume() { throw Error('NotAllowedError') } }
 assert.equal(await createTaskSoundPlayer(RejectedAudio).preview('soft'), false)
 assert.equal(await createTaskSoundPlayer(null).preview('soft'), false)
@@ -120,7 +122,7 @@ async function verifyClient(isStatic) {
   }
   const slots = { inject(name, callback) { callback() }, register(spec, factory) { registrations.set(spec.id, factory) } }
   function request(name, body) {
-    if (name === 'state') return Promise.resolve({ config: normalizeConfig({ checkUpdate: false }) })
+    if (name === 'state') return Promise.resolve({ config: normalizeConfig({ checkUpdate: false, topmost: { mode: 'card' } }) })
     if (name === 'version') return Promise.resolve({ local: 'test' })
     if (name.startsWith('poll')) return new Promise((resolve) => { pendingPoll = resolve })
     if (name === 'test') { testedSessions.push(body.sessionId); return Promise.resolve({ ok: true }) }
@@ -157,11 +159,21 @@ async function verifyClient(isStatic) {
     if (isStatic) {
       const labels = nodes(tree).flatMap((node) => node.children.filter((value) => typeof value === 'string'))
       assert.ok(labels.includes('插件更新'))
+      assert.ok(button(tree, '测试卡片'), 'card mode must keep the settings panel renderable')
       assert.ok(button(tree, '打开插件页'))
       button(tree, '打开插件页').props.onClick()
       assert.deepEqual(pluginPageVisits, ['plugins'])
       assert.equal(labels.some((label) => label.includes('同步插件文件') || label.includes('复制安装命令')), false)
       assert.equal(labels.some((label) => /\bv?\d+\.\d+\.\d+\b/.test(label)), false, 'internal version numbers must not appear in settings')
+       let settingsTree = render()
+       const topmost = nodes(settingsTree).find((node) => node.tag === 'select' && node.children.some((option) => option.props?.value === 'card'))
+       assert.ok(topmost, 'presentation mode selector renders')
+       topmost.props.onChange({ target: { value: 'off' } })
+       settingsTree = render()
+       const cardTopmost = nodes(settingsTree).find((node) => node.tag === 'select' && node.children.some((option) => option.props?.value === 'card'))
+       cardTopmost.props.onChange({ target: { value: 'card' } })
+       settingsTree = render()
+       assert.ok(button(settingsTree, '测试卡片'), 'settings remains rendered after switching back to Card')
     }
     let select = nodes(tree).find((node) => node.props['aria-label'] === '任务完成音效')
     assert.ok(select, 'sound row is rendered')
@@ -172,33 +184,51 @@ async function verifyClient(isStatic) {
     tree = render()
     assert.equal(writes.at(-1).soundCues, 'soft')
     assert.equal(button(tree, '关闭音效').props.disabled, false)
+    const selectedAudio = contexts.at(-1)
+    assert.equal(selectedAudio.tones.length, 1, 'selecting a cue previews it in the user gesture')
     await button(tree, '试听').props.onClick()
     const context = contexts.at(-1)
+    assert.equal(context, selectedAudio)
+    assert.equal(context.tones.length, 2, 'the Preview button plays the same selected cue')
     const before = context.tones.length
+    context.state = 'suspended'
+    const resumeCount = context.resumeCalls
     pendingPoll({ items: [{ seq: 10, category: 'task', title: 'Finished', body: '**Actual result**', sessionId: 'target-session', delivery: 'system' }], seq: 10 })
     await tick()
+    assert.equal(context.state, 'running', 'a background-suspended AudioContext is resumed for the task cue')
+    assert.equal(context.resumeCalls, resumeCount + 1)
     assert.equal(context.tones.length, before + 1)
+    assert.equal(banner.options.silent, true, 'OS audio is suppressed only when the custom cue actually plays')
     assert.equal(banner.options.body, 'Actual result')
     await banner.onclick()
     assert.deepEqual(openedSessions, ['target-session'], 'real uiWorkspace API must select the source conversation')
     assert.equal(activations.length, isStatic ? 1 : 0, 'Desktop static bundle must restore the native window on notification click')
+    const tonesAfterTask = context.tones.length
+    pendingPoll({ items: [{ seq: 11, category: 'error', title: 'Error', delivery: 'system' }], seq: 11 })
+    await tick()
+    assert.equal(context.tones.length, tonesAfterTask, 'error notifications are outside the task-completion cue setting')
+    assert.equal(banner.options.silent, undefined, 'error notifications keep the OS default sound; the task-completion cue does not apply')
     await button(render(), '发送测试通知').props.onClick()
     await tick()
     assert.equal(testedSessions.at(-1), 'target-session', 'test notification links back to the selected session')
-    pendingPoll({ items: [{ seq: 11, category: 'task', title: 'Fallback', delivery: 'system' }], seq: 11 })
+    context.state = 'suspended'
+    context.rejectResume = true
+    pendingPoll({ items: [{ seq: 12, category: 'task', title: 'Fallback', delivery: 'system' }], seq: 12 })
     await tick()
+    assert.equal(banner.options.silent, false, 'OS notification sound is the fallback when Web Audio cannot resume')
+    assert.equal(context.tones.length, before + 1, 'a suspended/rejected context does not claim that the selected cue played')
     banner.onerror()
     await tick()
-    assert.equal(context.tones.length, before + 2)
+    assert.equal(context.tones.length, before + 1)
     button(render(), '关闭音效').props.onClick()
     await tick()
     assert.equal(writes.at(-1).soundCues, 'off')
     assert.equal(readSoundPreference('soft'), 'off')
     tree = render()
     assert.equal(button(tree, '试听').props.disabled, true)
-    pendingPoll({ items: [{ seq: 12, category: 'task', title: 'Muted', delivery: 'system' }], seq: 12 })
+    pendingPoll({ items: [{ seq: 13, category: 'task', title: 'Muted', delivery: 'system' }], seq: 13 })
     await tick()
-    assert.equal(context.tones.length, before + 2)
+    assert.equal(context.tones.length, before + 1)
     console.log('PASS ' + (isStatic ? 'static' : 'dynamic') + ' built Client: select, preview, real dispatch, error fallback and mute')
   } finally {
     for (const dispose of effects) if (typeof dispose === 'function') dispose()

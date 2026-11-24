@@ -8,7 +8,7 @@
 // ctx / React / host 等宿主符号）。
 
 /** 插件版本（与 package.json 保持同步；Host 侧会优先读真实 package.json）。 */
-const VERSION = '1.0.1'
+const VERSION = '1.0.3'
 
 /** 上游仓库 owner/repo —— 更新检查与更新命令都基于它。 */
 const REPO = 'LouieKeung-13/dsh-task-toast'
@@ -308,13 +308,28 @@ function createTaskSoundPlayer(AudioContextApi = globalThis.AudioContext || glob
   let context
   let disposed = false
   const played = new Set()
+  const pending = new Map()
 
-  // Resume only on user interaction. Never queue background audio to replay on the next interaction.
-  async function unlock() {
-    if (disposed || typeof AudioContextApi !== 'function') return false
+  // Start from an explicit sound-picker/preview gesture. When a background
+  // renderer is suspended later, retry resume once before falling back to the OS.
+  async function unlock({ create = true, timeoutMs = 350 } = {}) {
+    if (disposed || typeof AudioContextApi !== 'function' || (!context && !create)) return false
     try {
       context ??= new AudioContextApi()
-      if (context.state !== 'running') await context.resume()
+      if (context.state !== 'running') {
+        let timeout
+        try {
+          // Invoke resume synchronously during the gesture/notification callback;
+          // deferring the call to a microtask can lose transient user activation.
+          let resumePromise
+          try { resumePromise = context.resume() } catch { return false }
+          const resumed = await Promise.race([
+            Promise.resolve(resumePromise).then(() => true, () => false),
+            new Promise((resolve) => { timeout = setTimeout(() => resolve(false), timeoutMs) }),
+          ])
+          if (!resumed) return false
+        } finally { if (timeout) clearTimeout(timeout) }
+      }
       return !disposed && context.state === 'running'
     } catch { return false }
   }
@@ -337,17 +352,29 @@ function createTaskSoundPlayer(AudioContextApi = globalThis.AudioContext || glob
       if (level !== 'soft' && level !== 'clear') return false
       return await unlock() && isCurrent() && play(level)
     },
-    notify(item, config) {
-      if (item.silent || !isTaskSoundItem(item) || !config.enabled || (item.category === 'task' && config.categories.task === 'off')) return false
+    async notify(item, config) {
+      if (item.silent || !isTaskSoundItem(item) || !config.enabled || config.soundCues === 'off' || (item.category === 'task' && config.categories.task === 'off')) return false
       const key = item.replaceSeq ?? item.seq
-      if (played.has(key) || !play(config.soundCues)) return false
-      played.add(key)
-      if (played.size > 200) played.delete(played.values().next().value)
-      return true
+      if (played.has(key)) return true
+      if (pending.has(key)) return pending.get(key)
+      const operation = (async () => {
+        // Background tabs and desktop renderers can suspend Web Audio. Try to
+        // resume the already user-unlocked context before falling back to OS audio.
+        const resumed = await unlock({ create: false })
+        if (!resumed || disposed) return false
+        if (!play(config.soundCues)) return false
+        played.add(key)
+        if (played.size > 200) played.delete(played.values().next().value)
+        return true
+      })()
+      pending.set(key, operation)
+      try { return await operation }
+      finally { if (pending.get(key) === operation) pending.delete(key) }
     },
     dispose() {
       disposed = true
       context?.close().catch(() => {})
+      pending.clear()
       played.clear()
     },
   }
@@ -426,7 +453,7 @@ function systemNotificationExcerpt(item, showSummary = true) {
 
 const retainedSystemNotifications = new Set()
 
-function deliverSystemNotification(item, { onOpen, onFallback, onStatus, onNavigationFailure, showSummary = true, NotificationApi = globalThis.Notification }) {
+function deliverSystemNotification(item, { onOpen, onFallback, onStatus, onNavigationFailure, showSummary = true, silent = true, NotificationApi = globalThis.Notification }) {
   const permission = systemNotificationPermission(NotificationApi)
   if (permission !== 'granted') {
     onStatus(permission)
@@ -444,7 +471,7 @@ function deliverSystemNotification(item, { onOpen, onFallback, onStatus, onNavig
     // The Host keeps replaceSeq stable for each burst. Reuse it as the OS tag where supported.
     const tag = 'dsh-tt-' + String(item.replaceSeq ?? item.seq)
     const options = { body: systemNotificationExcerpt(item, showSummary), tag, renotify: false }
-    if (isTaskSoundItem(item)) options.silent = true
+    if (isTaskSoundItem(item)) options.silent = !!silent
     const notification = new NotificationApi(item.title || 'DSH', options)
     retainedSystemNotifications.add(notification)
     if (retainedSystemNotifications.size > 200) retainedSystemNotifications.delete(retainedSystemNotifications.values().next().value)
@@ -547,7 +574,7 @@ function ui(locale) {
     soundCues: '任务完成音效',
     soundPreview: '试听',
     soundMute: '关闭音效',
-    soundUnavailable: '未能播放音效，请检查 DSH 的音频输出。',
+    soundUnavailable: '自定义音效未能播放；系统通知可回退到系统声音。请在 DSH 前台试听。',
     systemPermission: '系统通知权限',
     systemAllow: '请求权限',
     systemGranted: '已允许。横幅由系统设置控制。',
@@ -590,7 +617,7 @@ function ui(locale) {
     soundCues: 'Task completion sound',
     soundPreview: 'Preview',
     soundMute: 'Mute',
-    soundUnavailable: 'The sound could not play. Check the audio output for DSH.',
+    soundUnavailable: 'The custom cue did not play; system notifications can fall back to OS sound. Preview it with DSH in the foreground.',
     systemPermission: 'System notification permission',
     systemAllow: 'Request permission',
     systemGranted: 'Allowed. The OS controls banners.',
@@ -626,6 +653,7 @@ return {
       seq: 0,
       toastCounter: 0,
       systemStatus: null,
+      soundFailed: false,
       disposed: false,
       focusedSeq: null, // 键盘焦点所在的 toast（←→/↑↓ 切换，Enter 查看，Esc 忽略）
       seqLocal: 0,     // 本地回放/预览用的递减序号（避免与 Host 的 seq 冲突）
@@ -712,24 +740,41 @@ return {
       if (base.lifetime > 0 && timer) timer.timeout(() => dismissToast(base.id), base.lifetime)
     }
 
-    function handleItems(items) {
-      for (const item of items) {
-        if (!item) continue
-        const lifetime = item.category === 'test' ? 10000 : state.config.autoDismissMs || 0
-        const level = (state.config.categories || {})[item.category]
-        taskSound.notify(item, state.config)
-        if (item.delivery === 'system' || (item.category !== 'test' && !item.delivery && level === 'system')) {
-          deliverSystemNotification(item, {
-            onOpen: openSession,
-            showSummary: state.config.showSummary,
-            onNavigationFailure: () => { if (!state.disposed) addToast({ ...item, expanded: true }, 0) },
-            onFallback: () => { if (!state.disposed) addToast(item, lifetime) },
-            onStatus: (status) => { state.systemStatus = status; emitter.emit() },
-          })
-          continue
-        }
-        if (item.category === 'test' || level !== 'off') addToast(item, lifetime)
+    async function handleItem(item) {
+      if (!item || state.disposed) return
+      const lifetime = item.category === 'test' ? 10000 : state.config.autoDismissMs || 0
+      const level = (state.config.categories || {})[item.category]
+      const soundConfig = state.config
+      const soundRequested = (item.category === 'task' || item.category === 'test')
+        && soundConfig.enabled && soundConfig.soundCues !== 'off'
+        && !(item.category === 'task' && soundConfig.categories.task === 'off')
+      const soundPlayed = soundRequested && await taskSound.notify(item, soundConfig)
+      if (state.disposed) return
+      const usesSystemNotification = item.delivery === 'system' || (item.category !== 'test' && !item.delivery && level === 'system')
+      if (soundRequested && !soundPlayed && !state.soundFailed) {
+        state.soundFailed = true
+        emitter.emit()
+      } else if (soundPlayed && state.soundFailed) {
+        state.soundFailed = false
+        emitter.emit()
       }
+      if (usesSystemNotification) {
+        deliverSystemNotification(item, {
+          onOpen: openSession,
+          showSummary: state.config.showSummary,
+          silent: !soundRequested || soundPlayed,
+          onNavigationFailure: () => { if (!state.disposed) addToast({ ...item, expanded: true }, 0) },
+          onFallback: () => { if (!state.disposed) addToast(item, lifetime) },
+          onStatus: (status) => { state.systemStatus = status; emitter.emit() },
+        })
+        return
+      }
+      if (!soundPlayed && soundConfig.soundCues !== 'off' && !state.soundFailed) { state.soundFailed = true; emitter.emit() }
+      if (item.category === 'test' || level !== 'off') addToast(item, lifetime)
+    }
+
+    function handleItems(items) {
+      for (const item of items) void handleItem(item)
     }
 
     async function pump() {
@@ -902,7 +947,7 @@ return {
       const t = ui(cfg.locale)
       const [permission, setPermission] = React.useState(systemNotificationPermission)
       const [, rerenderSystem] = React.useState(0)
-      const messageKeys = { granted: 'systemGranted', default: 'systemDefault', denied: 'systemDenied', unsupported: 'systemUnsupported', failed: 'systemFailed', submitted: 'systemSubmitted', 'navigation-failed': 'navigationFailed' }
+      const messageKeys = { granted: 'systemGranted', default: 'systemDefault', denied: 'systemDenied', unsupported: 'systemUnsupported', failed: 'systemFailed', submitted: 'systemSubmitted', 'navigation-failed': 'navigationFailed', 'sound-unavailable': 'soundUnavailable' }
       const refreshPermission = () => setPermission(systemNotificationPermission())
       React.useEffect(() => {
         const unsubscribe = emitter.subscribe(() => { refreshPermission(); rerenderSystem((n) => n + 1) })
@@ -947,7 +992,7 @@ return {
       const langOpts = LOCALES.map((l) => React.createElement('option', { key: l.id, value: l.id }, cfg.locale === 'en' ? l.en : l.zh))
       const vbOpts = VIEW_BEHAVIORS.map((b) => React.createElement('option', { key: b.id, value: b.id }, cfg.locale === 'en' ? b.en : b.zh))
       const levelOpts = LEVELS.map((l) => React.createElement('option', { key: l.id, value: l.id }, cfg.locale === 'en' ? l.en : l.zh))
-      const soundRow = selectRow(t.soundCues, soundFailed ? t.soundUnavailable : null,
+      const soundRow = selectRow(t.soundCues, soundFailed || state.soundFailed ? t.soundUnavailable : null,
         React.createElement('div', { className: 'dsh-tt-actions-row', style: { flexWrap: 'wrap', justifyContent: 'flex-end' } },
           React.createElement('select', {
             className: 'dsh-tt-select',
@@ -956,7 +1001,10 @@ return {
             onChange: (event) => {
               const soundCues = event.target.value
               setSoundFailed(false)
-              if (soundCues !== 'off') void taskSound.unlock()
+              if (soundCues !== 'off') {
+                 void taskSound.preview(soundCues, () => state.config.soundCues === soundCues && !state.disposed)
+                   .then((played) => { if (!state.disposed && state.config.soundCues === soundCues) { state.soundFailed = !played; setSoundFailed(!played); emitter.emit() } })
+               }
               saveSoundPreference(soundCues)
               update({ soundCues })
             },
@@ -969,7 +1017,7 @@ return {
               const selected = cfg.soundCues
               const isCurrent = () => state.config.soundCues === selected && !state.disposed
               const played = await taskSound.preview(selected, isCurrent)
-              if (isCurrent()) setSoundFailed(!played)
+              if (isCurrent()) { state.soundFailed = !played; setSoundFailed(!played); emitter.emit() }
             },
           }, t.soundPreview),
           React.createElement('button', {

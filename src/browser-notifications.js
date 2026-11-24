@@ -52,13 +52,28 @@ export function createTaskSoundPlayer(AudioContextApi = globalThis.AudioContext 
   let context
   let disposed = false
   const played = new Set()
+  const pending = new Map()
 
-  // Resume only on user interaction. Never queue background audio to replay on the next interaction.
-  async function unlock() {
-    if (disposed || typeof AudioContextApi !== 'function') return false
+  // Start from an explicit sound-picker/preview gesture. When a background
+  // renderer is suspended later, retry resume once before falling back to the OS.
+  async function unlock({ create = true, timeoutMs = 350 } = {}) {
+    if (disposed || typeof AudioContextApi !== 'function' || (!context && !create)) return false
     try {
       context ??= new AudioContextApi()
-      if (context.state !== 'running') await context.resume()
+      if (context.state !== 'running') {
+        let timeout
+        try {
+          // Invoke resume synchronously during the gesture/notification callback;
+          // deferring the call to a microtask can lose transient user activation.
+          let resumePromise
+          try { resumePromise = context.resume() } catch { return false }
+          const resumed = await Promise.race([
+            Promise.resolve(resumePromise).then(() => true, () => false),
+            new Promise((resolve) => { timeout = setTimeout(() => resolve(false), timeoutMs) }),
+          ])
+          if (!resumed) return false
+        } finally { if (timeout) clearTimeout(timeout) }
+      }
       return !disposed && context.state === 'running'
     } catch { return false }
   }
@@ -81,17 +96,29 @@ export function createTaskSoundPlayer(AudioContextApi = globalThis.AudioContext 
       if (level !== 'soft' && level !== 'clear') return false
       return await unlock() && isCurrent() && play(level)
     },
-    notify(item, config) {
-      if (item.silent || !isTaskSoundItem(item) || !config.enabled || (item.category === 'task' && config.categories.task === 'off')) return false
+    async notify(item, config) {
+      if (item.silent || !isTaskSoundItem(item) || !config.enabled || config.soundCues === 'off' || (item.category === 'task' && config.categories.task === 'off')) return false
       const key = item.replaceSeq ?? item.seq
-      if (played.has(key) || !play(config.soundCues)) return false
-      played.add(key)
-      if (played.size > 200) played.delete(played.values().next().value)
-      return true
+      if (played.has(key)) return true
+      if (pending.has(key)) return pending.get(key)
+      const operation = (async () => {
+        // Background tabs and desktop renderers can suspend Web Audio. Try to
+        // resume the already user-unlocked context before falling back to OS audio.
+        const resumed = await unlock({ create: false })
+        if (!resumed || disposed) return false
+        if (!play(config.soundCues)) return false
+        played.add(key)
+        if (played.size > 200) played.delete(played.values().next().value)
+        return true
+      })()
+      pending.set(key, operation)
+      try { return await operation }
+      finally { if (pending.get(key) === operation) pending.delete(key) }
     },
     dispose() {
       disposed = true
       context?.close().catch(() => {})
+      pending.clear()
       played.clear()
     },
   }
@@ -170,7 +197,7 @@ export function systemNotificationExcerpt(item, showSummary = true) {
 
 const retainedSystemNotifications = new Set()
 
-export function deliverSystemNotification(item, { onOpen, onFallback, onStatus, onNavigationFailure, showSummary = true, NotificationApi = globalThis.Notification }) {
+export function deliverSystemNotification(item, { onOpen, onFallback, onStatus, onNavigationFailure, showSummary = true, silent = true, NotificationApi = globalThis.Notification }) {
   const permission = systemNotificationPermission(NotificationApi)
   if (permission !== 'granted') {
     onStatus(permission)
@@ -188,7 +215,7 @@ export function deliverSystemNotification(item, { onOpen, onFallback, onStatus, 
     // The Host keeps replaceSeq stable for each burst. Reuse it as the OS tag where supported.
     const tag = 'dsh-tt-' + String(item.replaceSeq ?? item.seq)
     const options = { body: systemNotificationExcerpt(item, showSummary), tag, renotify: false }
-    if (isTaskSoundItem(item)) options.silent = true
+    if (isTaskSoundItem(item)) options.silent = !!silent
     const notification = new NotificationApi(item.title || 'DSH', options)
     retainedSystemNotifications.add(notification)
     if (retainedSystemNotifications.size > 200) retainedSystemNotifications.delete(retainedSystemNotifications.values().next().value)
